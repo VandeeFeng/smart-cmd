@@ -61,6 +61,8 @@ _smart-cmd-show-hint() {
         local current_line="${READLINE_LINE}"
         local suggestion_type="${_SMART_CMD_CURRENT_SUGGESTION:0:1}"
         local suggestion_text="${_SMART_CMD_CURRENT_SUGGESTION:1}"
+        # Remove leading spaces from suggestion text for display
+        suggestion_text=$(echo "$suggestion_text" | sed 's/^ *//')
 
         # Save cursor position and show hint on next line
         tput sc
@@ -69,14 +71,14 @@ _smart-cmd-show-hint() {
         echo
         case "$suggestion_type" in
             "+")
-                # Show completion hint - show what the completed command will be
-                echo -e "\e[90m💡 Suggestion: $current_line$suggestion_text\e[0m"
-                echo -e "\e[90m→ Press Right arrow to accept, any other key to dismiss\e[0m"
+                # Show completion hint - show current input -> completed command
+                echo -e "\e[90m💡 Suggestion: $current_line -> $suggestion_text\e[0m"
+                echo -e "\e[90m→ Press Right arrow to accept, ESC to dismiss\e[0m"
                 ;;
             "=")
                 # Show new command hint
-                echo -e "\e[90m💡 Suggestion: $suggestion_text\e[0m"
-                echo -e "\e[90m→ Press Right arrow to accept, any other key to dismiss\e[0m"
+                echo -e "\e[90m💡 Suggestion: $current_line -> $suggestion_text\e[0m"
+                echo -e "\e[90m→ Press Right arrow to accept, ESC to dismiss\e[0m"
                 ;;
         esac
         tput rc  # Restore cursor position
@@ -210,6 +212,9 @@ _smart-cmd-setup() {
 
         # Bind right arrow to accept hint
         bind -x '"\e[C": _smart-cmd-accept-hint'
+
+        # Bind ESC key to clear hint
+        bind -x '"\e": _smart-cmd-clear-hint'
 
         # Simple clear hint function for other operations
         bind 'set completion-ignore-case on' 2>/dev/null || true
