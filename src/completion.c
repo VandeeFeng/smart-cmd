@@ -1,0 +1,211 @@
+#define _GNU_SOURCE
+#include "smart_cmd.h"
+#include <getopt.h>
+
+typedef struct {
+    char input[MAX_INPUT_LEN];
+    char cwd[512];
+    char username[64];
+    char hostname[256];
+    char git_branch[128];
+    int git_dirty;
+} completion_context_t;
+
+static void print_usage(const char *program_name) {
+    printf("Usage: %s [OPTIONS]\n", program_name);
+    printf("Smart Command Completion Backend\n\n");
+    printf("Options:\n");
+    printf("  -i, --input TEXT      Current command line input\n");
+    printf("  -c, --context JSON    Context information (JSON format)\n");
+    printf("  -h, --help           Show this help message\n");
+    printf("  -v, --version        Show version information\n");
+}
+
+static void print_version() {
+    printf("smart-cmd-completion %s\n", VERSION);
+}
+
+static int parse_context_json(const char *context_json, completion_context_t *ctx) {
+    // Simple JSON parsing for the context
+
+    // Initialize defaults
+    memset(ctx, 0, sizeof(completion_context_t));
+    getcwd(ctx->cwd, sizeof(ctx->cwd) - 1);
+
+    struct passwd *pw = getpwuid(getuid());
+    if (pw) {
+        strncpy(ctx->username, pw->pw_name, sizeof(ctx->username) - 1);
+    }
+    gethostname(ctx->hostname, sizeof(ctx->hostname) - 1);
+
+    // Parse JSON (basic string extraction)
+    if (context_json) {
+        char *json_copy = strdup(context_json);
+        if (!json_copy) return -1;
+
+        // Extract command_line
+        char *cmd_start = strstr(json_copy, "\"command_line\":");
+        if (cmd_start) {
+            cmd_start = strchr(cmd_start, '"');
+            if (cmd_start) cmd_start = strchr(cmd_start + 1, '"');
+            if (cmd_start) {
+                cmd_start++;
+                char *cmd_end = strchr(cmd_start, '"');
+                if (cmd_end) {
+                    *cmd_end = '\0';
+                    strncpy(ctx->input, cmd_start, sizeof(ctx->input) - 1);
+                }
+            }
+        }
+
+        // Extract cwd
+        char *cwd_start = strstr(json_copy, "\"cwd\":");
+        if (cwd_start) {
+            cwd_start = strchr(cwd_start, '"');
+            if (cwd_start) cwd_start = strchr(cwd_start + 1, '"');
+            if (cwd_start) {
+                cwd_start++;
+                char *cwd_end = strchr(cwd_start, '"');
+                if (cwd_end) {
+                    *cwd_end = '\0';
+                    strncpy(ctx->cwd, cwd_start, sizeof(ctx->cwd) - 1);
+                }
+            }
+        }
+
+        // Extract git info if present
+        char *git_start = strstr(json_copy, "\"git\":");
+        if (git_start) {
+            // Extract branch
+            char *branch_start = strstr(git_start, "\"branch\":");
+            if (branch_start) {
+                branch_start = strchr(branch_start, '"');
+                if (branch_start) branch_start = strchr(branch_start + 1, '"');
+                if (branch_start) {
+                    branch_start++;
+                    char *branch_end = strchr(branch_start, '"');
+                    if (branch_end) {
+                        *branch_end = '\0';
+                        strncpy(ctx->git_branch, branch_start, sizeof(ctx->git_branch) - 1);
+                    }
+                }
+            }
+
+            // Extract dirty status
+            ctx->git_dirty = (strstr(git_start, "\"dirty\":true") != NULL);
+        }
+
+        free(json_copy);
+    }
+
+    return 0;
+}
+
+static int get_multiple_suggestions(const char *input, const completion_context_t *ctx,
+                                    const config_t *config, suggestion_t *suggestions, int max_suggestions) {
+    if (!input || !ctx || !config || !suggestions || max_suggestions <= 0) return -1;
+
+    int count = 0;
+
+    // First suggestion
+    if (send_to_llm(input, (const context_t*)ctx, config, &suggestions[count]) == 0) {
+        count++;
+    }
+
+    // Second suggestion
+    if (count < max_suggestions) {
+        // For now, skip to avoid complexity
+    }
+
+    return count;
+}
+
+static void print_suggestions_json(suggestion_t *suggestions, int count) {
+    printf("{\"suggestions\":[");
+
+    for (int i = 0; i < count; i++) {
+        if (i > 0) printf(",");
+        printf("\"%c%s\"", suggestions[i].type, suggestions[i].suggestion);
+    }
+
+    printf("]}\n");
+}
+
+int main(int argc, char *argv[]) {
+    char input[MAX_INPUT_LEN] = {0};
+    char context_json[MAX_CONTEXT_LEN] = {0};
+
+    static struct option long_options[] = {
+        {"input", required_argument, 0, 'i'},
+        {"context", required_argument, 0, 'c'},
+        {"help", no_argument, 0, 'h'},
+        {"version", no_argument, 0, 'v'},
+        {0, 0, 0, 0}
+    };
+
+    int option_index = 0;
+    int c;
+
+    while ((c = getopt_long(argc, argv, "i:c:hv", long_options, &option_index)) != -1) {
+        switch (c) {
+        case 'i':
+            strncpy(input, optarg, sizeof(input) - 1);
+            break;
+        case 'c':
+            strncpy(context_json, optarg, sizeof(context_json) - 1);
+            break;
+        case 'h':
+            print_usage(argv[0]);
+            return 0;
+        case 'v':
+            print_version();
+            return 0;
+        case '?':
+            fprintf(stderr, "Unknown option. Use -h for help.\n");
+            return 1;
+        default:
+            abort();
+        }
+    }
+
+    // Load configuration
+    config_t config;
+    if (load_config(&config) == -1) {
+        fprintf(stderr, "Failed to load configuration\n");
+        return 1;
+    }
+
+    // Parse context
+    completion_context_t ctx;
+    if (parse_context_json(context_json, &ctx) == -1) {
+        fprintf(stderr, "Failed to parse context JSON\n");
+        return 1;
+    }
+
+    // If no input provided, try to get it from environment or stdin
+    if (strlen(input) == 0) {
+        const char *env_input = getenv("SMART_CMD_INPUT");
+        if (env_input) {
+            strncpy(input, env_input, sizeof(input) - 1);
+        } else {
+            // Read from stdin if available
+            if (!isatty(STDIN_FILENO)) {
+                if (fgets(input, sizeof(input), stdin)) {
+                    input[strcspn(input, "\n")] = '\0';
+                }
+            }
+        }
+    }
+
+    // Get suggestions
+    suggestion_t suggestions[5];
+    int suggestion_count = get_multiple_suggestions(input, &ctx, &config, suggestions, 5);
+
+    if (suggestion_count > 0) {
+        print_suggestions_json(suggestions, suggestion_count);
+    } else {
+        printf("{\"suggestions\":[]}\n");
+    }
+
+    return 0;
+}

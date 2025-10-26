@@ -1,0 +1,23 @@
+{
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4.1-nano",
+    "endpoint": "https://api.openai.com/v1/chat/completions"
+  },
+  "trigger_key": "ctrl+o",
+  "enable_proxy_mode": true,
+  "providers": {
+    "openai": {
+      "endpoint": "https://api.openai.com/v1/chat/completions",
+      "model": "gpt-4.1-nano"
+    },
+    "gemini": {
+      "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/",
+      "model": "gemini-2.0-flash"
+    },
+    "openrouter": {
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "model": "qwen/qwen3-coder:free"
+    }
+  }
+}
