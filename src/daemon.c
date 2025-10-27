@@ -126,9 +126,19 @@ int start_daemon_process(daemon_session_t *info) {
         return -1;
     }
 
-    // Setup paths using unified utility function
-    if (generate_session_paths(&info->paths, info->paths.session_id) == -1) {
-        fprintf(stderr, "Failed to create session paths\n");
+    // Setup paths using individual utility functions
+    if (generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path), info->paths.session_id) == -1) {
+        fprintf(stderr, "Failed to create socket path\n");
+        return -1;
+    }
+
+    if (generate_lock_path(info->paths.lock_file, sizeof(info->paths.lock_file), info->paths.session_id) == -1) {
+        fprintf(stderr, "Failed to create lock file path\n");
+        return -1;
+    }
+
+    if (generate_log_path(info->paths.log_file, sizeof(info->paths.log_file), info->paths.session_id) == -1) {
+        fprintf(stderr, "Failed to create log file path\n");
         return -1;
     }
 
