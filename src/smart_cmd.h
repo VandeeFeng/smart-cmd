@@ -17,6 +17,7 @@
 #include <sys/stat.h>
 #include <pwd.h>
 #include <wordexp.h>
+#include "utils.h"
 
 // Constants
 #define MAX_INPUT_LEN 4096
@@ -24,17 +25,44 @@
 #define MAX_SUGGESTION_LEN 1024
 #define CONFIG_FILE_PATH "~/.config/smart-cmd/config.json"
 #define MAX_HISTORY_COMMANDS 50
+#define MAX_SESSION_ID 32
+#define MAX_PATH 512
 
-
-
+// User context - basic environment information
 typedef struct {
     char username[64];
     char hostname[256];
-    char cwd[512];
+    char cwd[MAX_PATH];
+    time_t last_activity;
+} user_context_t;
+
+// Session context - combines user context with command history
+typedef struct {
+    user_context_t user;
     char last_command[MAX_INPUT_LEN];
     char terminal_buffer[MAX_CONTEXT_LEN];
-} context_t;
+    int command_count;
+    char session_id[MAX_SESSION_ID];
+} session_context_t;
 
+// Session paths - all file paths for a session
+typedef struct {
+    char socket_path[MAX_PATH];
+    char lock_file[MAX_PATH];
+    char log_file[MAX_PATH];
+    char session_id[MAX_SESSION_ID];
+} session_paths_t;
+
+// Daemon session - combines all daemon-related state
+typedef struct {
+    session_paths_t paths;
+    session_context_t context;
+    pid_t daemon_pid;
+    int active;
+    time_t start_time;
+} daemon_session_t;
+
+// LLM configuration
 typedef struct {
     char provider[32];
     char api_key[256];
@@ -42,20 +70,23 @@ typedef struct {
     char endpoint[256];
 } llm_config_t;
 
+// Main configuration
 typedef struct {
     llm_config_t llm;
-    char trigger_key[8]; // e.g., "ctrl+o"
-    int trigger_key_value; // Parsed ASCII value
+    char trigger_key[8];
+    int trigger_key_value;
     int enable_proxy_mode;
     int show_startup_messages;
 } config_t;
 
+// Command suggestion
 typedef struct {
     char suggestion[MAX_SUGGESTION_LEN];
     char type; // '+' for completion, '=' for new command
     int visible;
 } suggestion_t;
 
+// PTY session for daemon
 typedef struct {
     int master_fd;
     int slave_fd;
@@ -63,32 +94,24 @@ typedef struct {
     char buffer[MAX_CONTEXT_LEN];
     int buffer_pos;
     int active;
-    char session_id[32];
+    char session_id[MAX_SESSION_ID];
 } daemon_pty_t;
 
-typedef struct {
-    pid_t daemon_pid;
-    char socket_path[256];
-    char lock_file[256];
-    char session_id[32];
-    char log_file[256];
-    int active;
-    time_t start_time;
-} daemon_info_t;
-
-// Command history structure
+// Command history entry
 typedef struct {
     char command[MAX_INPUT_LEN];
     time_t timestamp;
 } command_history_t;
 
+// Command history manager
 typedef struct {
-    command_history_t commands[50];  // Store last 50 commands
+    command_history_t commands[MAX_HISTORY_COMMANDS];
     int count;
-    int current_index;  // Circular buffer index
-    char history_file[256];
+    int current_index;
+    char history_file[MAX_PATH];
 } command_history_manager_t;
 
+// Command line arguments
 typedef struct {
     const char *command;
     const char *input;
@@ -100,12 +123,12 @@ typedef struct {
 } command_args_t;
 
 // Function prototypes
-int collect_context(context_t *ctx);
-int send_to_llm(const char *input, const context_t *ctx, const config_t *config, suggestion_t *suggestion);
+int collect_context(session_context_t *ctx);
+int send_to_llm(const char *input, const session_context_t *ctx, const config_t *config, suggestion_t *suggestion);
 int load_config(config_t *config);
 
 // Management and UI functions
-int find_running_daemon(daemon_info_t *info);
+int find_running_daemon(daemon_session_t *info);
 int cmd_toggle();
 int cmd_status();
 int cmd_start();
@@ -120,14 +143,13 @@ void print_version();
 #endif
 
 // Completion functions
-int parse_completion_context(const char *context_json, context_t *ctx);
+int parse_completion_context(const char *context_json, session_context_t *ctx);
 int format_completion_output(const suggestion_t *suggestion, char **json_output);
 int run_basic_tests();
 int run_completion_mode(const char *input, const char *context_json);
 
 // Argument processing functions
 char *concat_remaining_args(int argc, char *argv[], int start_index);
-int parse_command_args(int argc, char *argv[], command_args_t *args);
 
 // Daemon-related functions
 int create_daemon_lock(const char *lock_file, pid_t pid);
@@ -135,9 +157,9 @@ int create_daemon_lock_force(const char *lock_file, pid_t pid);
 int check_daemon_running(const char *lock_file);
 int cleanup_daemon_lock(const char *lock_file);
 int generate_session_id(char *session_id, size_t len);
-int start_daemon_process(daemon_info_t *info);
-int stop_daemon_process(daemon_info_t *info);
-int daemon_is_active(daemon_info_t *info);
+int start_daemon_process(daemon_session_t *info);
+int stop_daemon_process(daemon_session_t *info);
+int daemon_is_active(daemon_session_t *info);
 int setup_daemon_pty(daemon_pty_t *pty, const char *session_id);
 void cleanup_daemon_pty(daemon_pty_t *pty);
 int read_from_daemon_pty(daemon_pty_t *pty, char *buffer, size_t buffer_size);

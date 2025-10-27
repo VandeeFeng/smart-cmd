@@ -3,13 +3,13 @@ CFLAGS = -Wall -Wextra -std=c99 -O2 -DVERSION='"1.0.0"'
 LIBS = -lutil -lcurl -ljson-c
 
 # Source files
-CORE_SOURCES = src/config.c src/llm_client.c src/basic_context.c src/pty_proxy.c src/daemon.c src/ipc.c src/daemon_history.c src/manager.c src/completion.c src/args.c
+CORE_SOURCES = src/config.c src/llm_client.c src/basic_context.c src/pty_proxy.c src/daemon.c src/ipc.c src/daemon_history.c src/manager.c src/completion.c src/utils.c
 MAIN_SOURCES = src/main.c
 COMPLETION_SOURCES = src/completion.c
 DAEMON_SOURCES = src/smart_cmd_daemon.c
 
 # Header files
-HEADERS = src/smart_cmd.h src/defaults.h
+HEADERS = src/smart_cmd.h src/defaults.h src/utils.h
 
 .PHONY: all clean test completion daemon install uninstall
 

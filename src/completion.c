@@ -110,7 +110,7 @@ static int get_multiple_suggestions(const char *input, const completion_context_
     int count = 0;
 
     // First suggestion
-    if (send_to_llm(input, (const context_t*)ctx, config, &suggestions[count]) == 0) {
+    if (send_to_llm(input, (const session_context_t*)ctx, config, &suggestions[count]) == 0) {
         count++;
     }
 
@@ -131,6 +131,12 @@ static void print_suggestions_json(suggestion_t *suggestions, int count) {
     }
 
     printf("]}\n");
+}
+
+static void print_suggestions_plain(suggestion_t *suggestions, int count) {
+    if (count > 0) {
+        printf("%c%s", suggestions[0].type, suggestions[0].suggestion);
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -204,9 +210,7 @@ int main(int argc, char *argv[]) {
     int suggestion_count = get_multiple_suggestions(input, &ctx, &config, suggestions, 5);
 
     if (suggestion_count > 0) {
-        print_suggestions_json(suggestions, suggestion_count);
-    } else {
-        printf("{\"suggestions\":[]}\n");
+        print_suggestions_plain(suggestions, suggestion_count);
     }
 
     return 0;
@@ -217,7 +221,7 @@ int main(int argc, char *argv[]) {
 // Functions for main binary
 #include <json-c/json.h>
 
-int parse_completion_context(const char *context_json, context_t *ctx) {
+int parse_completion_context(const char *context_json, session_context_t *ctx) {
     if (!context_json || !ctx) return -1;
 
     json_object *root = json_tokener_parse(context_json);
@@ -225,13 +229,13 @@ int parse_completion_context(const char *context_json, context_t *ctx) {
 
     json_object *cwd, *user, *host;
     if (json_object_object_get_ex(root, "cwd", &cwd)) {
-        strncpy(ctx->cwd, json_object_get_string(cwd), sizeof(ctx->cwd) - 1);
+        strncpy(ctx->user.cwd, json_object_get_string(cwd), sizeof(ctx->user.cwd) - 1);
     }
     if (json_object_object_get_ex(root, "user", &user)) {
-        strncpy(ctx->username, json_object_get_string(user), sizeof(ctx->username) - 1);
+        strncpy(ctx->user.username, json_object_get_string(user), sizeof(ctx->user.username) - 1);
     }
     if (json_object_object_get_ex(root, "host", &host)) {
-        strncpy(ctx->hostname, json_object_get_string(host), sizeof(ctx->hostname) - 1);
+        strncpy(ctx->user.hostname, json_object_get_string(host), sizeof(ctx->user.hostname) - 1);
     }
 
     json_object_put(root);
@@ -267,12 +271,12 @@ int run_basic_tests() {
     }
 
     printf("  Testing context collection... ");
-    context_t ctx;
+    session_context_t ctx;
     if (collect_context(&ctx) == 0) {
         printf("OK\n");
-        printf("    Current directory: %s\n", ctx.cwd);
-        printf("    User: %s\n", ctx.username);
-        printf("    Host: %s\n", ctx.hostname);
+        printf("    Current directory: %s\n", ctx.user.cwd);
+        printf("    User: %s\n", ctx.user.username);
+        printf("    Host: %s\n", ctx.user.hostname);
     } else {
         printf("FAILED\n");
     }
@@ -287,7 +291,7 @@ int run_completion_mode(const char *input, const char *context_json) {
     config_t config;
     load_config(&config);
 
-    context_t ctx = {0};
+    session_context_t ctx = {0};
     if (context_json) {
         if (parse_completion_context(context_json, &ctx) != 0) {
             fprintf(stderr, "error:Failed to parse context JSON.\n");

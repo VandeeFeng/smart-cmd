@@ -11,23 +11,23 @@
  * the user's actual shell environment, including bash history and system info.
  */
 
-static int get_user_info(context_t *ctx) {
+static int get_user_info(session_context_t *ctx) {
     struct passwd *pw = getpwuid(getuid());
     if (!pw) return -1;
 
-    snprintf(ctx->username, sizeof(ctx->username), "%s", pw->pw_name);
+    snprintf(ctx->user.username, sizeof(ctx->user.username), "%s", pw->pw_name);
 
     // Get hostname
-    if (gethostname(ctx->hostname, sizeof(ctx->hostname) - 1) == -1) {
-        strcpy(ctx->hostname, "localhost");
+    if (gethostname(ctx->user.hostname, sizeof(ctx->user.hostname) - 1) == -1) {
+        strcpy(ctx->user.hostname, "localhost");
     }
 
     return 0;
 }
 
-static int get_current_directory(context_t *ctx) {
-    if (getcwd(ctx->cwd, sizeof(ctx->cwd) - 1) == NULL) {
-        strcpy(ctx->cwd, "/unknown");
+static int get_current_directory(session_context_t *ctx) {
+    if (getcwd(ctx->user.cwd, sizeof(ctx->user.cwd) - 1) == NULL) {
+        strcpy(ctx->user.cwd, "/unknown");
         return -1;
     }
     return 0;
@@ -65,7 +65,7 @@ static int is_sensitive_command(const char *command) {
     return 0; // Not sensitive
 }
 
-static int get_command_history(context_t *ctx) {
+static int get_command_history(session_context_t *ctx) {
     const char *history_file = getenv("HISTFILE");
     if (!history_file) {
         history_file = "~/.bash_history";
@@ -117,7 +117,7 @@ static int get_command_history(context_t *ctx) {
     return 0;
 }
 
-static int detect_tmux(context_t *ctx) {
+static int detect_tmux(session_context_t *ctx) {
     const char *tmux = getenv("TMUX");
     if (tmux && strlen(tmux) > 0) {
         // In tmux session - simplified detection
@@ -132,7 +132,7 @@ static int detect_tmux(context_t *ctx) {
     return 0;
 }
 
-static int detect_screen(context_t *ctx) {
+static int detect_screen(session_context_t *ctx) {
     const char *stty = getenv("STY");
     if (stty && strlen(stty) > 0) {
         // In screen session
@@ -147,7 +147,7 @@ static int detect_screen(context_t *ctx) {
     return 0;
 }
 
-static int get_environment_info(context_t *ctx) {
+static int get_environment_info(session_context_t *ctx) {
     // Get essential environment variables for context
     const char *env_vars[] = {"PWD", "USER", "HOME", "LANG", NULL};
 
@@ -166,7 +166,7 @@ static int get_environment_info(context_t *ctx) {
     return 0;
 }
 
-static int get_git_info(context_t *ctx) {
+static int get_git_info(session_context_t *ctx) {
     // Simplified git detection and info collection
     if (system("git rev-parse --git-dir > /dev/null 2>&1") == 0) {
         FILE *fp;
@@ -191,11 +191,11 @@ static int get_git_info(context_t *ctx) {
     return 0;
 }
 
-int collect_context(context_t *ctx) {
+int collect_context(session_context_t *ctx) {
     if (!ctx) return -1;
 
     // Initialize context
-    memset(ctx, 0, sizeof(context_t));
+    memset(ctx, 0, sizeof(session_context_t));
 
     // Collect basic information
     get_user_info(ctx);

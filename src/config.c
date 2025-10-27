@@ -208,18 +208,18 @@ char* get_config_file_path(void) {
 }
 
 char* get_temp_file_path(const char* prefix) {
-    const char* tmp_dir = getenv("TMPDIR");
-    if (!tmp_dir) tmp_dir = "/tmp";
+    RETURN_IF_NULL(prefix, NULL);
 
-    char session_id[32];
+    char session_id[MAX_SESSION_ID];
     if (generate_session_id(session_id, sizeof(session_id)) == -1) {
         return NULL;
     }
 
-    char* path = malloc(strlen(tmp_dir) + strlen("/smart-cmd.") + strlen(prefix) + strlen(session_id) + 3);
-    if (!path) return NULL;
+    char temp_path[MAX_PATH];
+    if (generate_temp_file_path(temp_path, sizeof(temp_path), prefix, session_id) == -1) {
+        return NULL;
+    }
 
-    sprintf(path, "%s/smart-cmd.%s.%s", tmp_dir, prefix, session_id);
-    return path;
+    return strdup(temp_path);
 }
 

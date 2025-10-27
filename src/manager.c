@@ -3,14 +3,12 @@
 #include "defaults.h"
 #include <glob.h>
 
-int find_running_daemon(daemon_info_t *info) {
-    if (!info) return -1;
+int find_running_daemon(daemon_session_t *info) {
+    RETURN_IF_NULL(info, -1);
 
-    const char *tmp_dir = getenv("TMPDIR");
-    if (!tmp_dir) tmp_dir = "/tmp";
-
+    const char *tmp_dir = get_smart_cmd_tmpdir();
     char pattern[512];
-    snprintf(pattern, sizeof(pattern), "%s/smart-cmd.lock.*", tmp_dir);
+    snprintf(pattern, sizeof(pattern), "%s/%s.*", tmp_dir, LOCK_FILE_PREFIX);
 
     glob_t glob_result;
     int ret = glob(pattern, 0, NULL, &glob_result);
@@ -25,22 +23,20 @@ int find_running_daemon(daemon_info_t *info) {
         FILE *f = fopen(lock_file, "r");
         if (f) {
             pid_t pid;
-            if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) {
+            if (fscanf(f, "%d", &pid) == 1 && is_process_running(pid)) {
                 fclose(f);
 
                 info->daemon_pid = pid;
-                strncpy(info->lock_file, lock_file, sizeof(info->lock_file) - 1);
+                safe_string_copy(info->paths.lock_file, lock_file, sizeof(info->paths.lock_file));
 
                 const char *filename = strrchr(lock_file, '/') + 1;
-                char socket_path[512];
-                snprintf(socket_path, sizeof(socket_path), "%s/smart-cmd.socket.%s",
-                        tmp_dir, filename + strlen("smart-cmd.lock."));
-                strncpy(info->socket_path, socket_path, sizeof(info->socket_path) - 1);
-                info->socket_path[sizeof(info->socket_path) - 1] = '\0'; // Ensure null termination
-
                 const char *session_start = strrchr(filename, '.');
                 if (session_start) {
-                    strncpy(info->session_id, session_start + 1, sizeof(info->session_id) - 1);
+                    safe_string_copy(info->paths.session_id, session_start + 1, sizeof(info->paths.session_id));
+
+                    // Generate socket path
+                    generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path),
+                                      info->paths.session_id);
                 }
 
                 info->active = 1;
@@ -98,11 +94,11 @@ int cmd_status() {
            config.enable_proxy_mode ? "DAEMON (PTY mode)" : "BASIC (direct AI)");
 
     if (config.enable_proxy_mode) {
-        daemon_info_t info = {0};
+        daemon_session_t info = {0};
         if (find_running_daemon(&info) == 0) {
             printf("Daemon is running (PID: %d)\n", info.daemon_pid);
-            printf("Session: %s\n", info.session_id);
-            printf("Socket: %s\n", info.socket_path);
+            printf("Session: %s\n", info.paths.session_id);
+            printf("Socket: %s\n", info.paths.socket_path);
             printf("Status: Running\n");
         } else {
             printf("Daemon is not running (will start on demand)\n");
@@ -133,7 +129,7 @@ int cmd_start() {
         return 1;
     }
 
-    daemon_info_t info = {0};
+    daemon_session_t info = {0};
     if (find_running_daemon(&info) == 0) {
         printf("Daemon already running (PID: %d)\n", info.daemon_pid);
         free(daemon_bin);
@@ -158,7 +154,7 @@ int cmd_start() {
 
         if (find_running_daemon(&info) == 0) {
             printf("%s (PID: %d, Session: %s)\n",
-                   MSG_DAEMON_STARTED, info.daemon_pid, info.session_id);
+                   MSG_DAEMON_STARTED, info.daemon_pid, info.paths.session_id);
             return 0;
         } else {
             fprintf(stderr, "%s\n", MSG_DAEMON_START_FAILED);
@@ -168,7 +164,7 @@ int cmd_start() {
 }
 
 int cmd_stop() {
-    daemon_info_t info = {0};
+    daemon_session_t info = {0};
     if (find_running_daemon(&info) != 0) {
         printf("Daemon is not running\n");
         return 0;
@@ -176,8 +172,8 @@ int cmd_stop() {
 
     if (kill(info.daemon_pid, SIGTERM) == 0) {
         usleep(100000);
-        unlink(info.lock_file);
-        unlink(info.socket_path);
+        cleanup_lock_file(info.paths.lock_file);
+        unlink(info.paths.socket_path);
         printf("%s\n", MSG_DAEMON_STOPPED);
         return 0;
     } else {

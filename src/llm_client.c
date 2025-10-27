@@ -149,11 +149,11 @@ static json_object *create_openai_request(const char *input, const char *system_
     return request;
 }
 
-static json_object* create_llm_request(const char *input, const context_t *ctx, const config_t *config) {
+static json_object* create_llm_request(const char *input, const session_context_t *ctx, const config_t *config) {
     prompt_context_t prompt_ctx = {
-        .username = ctx->username,
-        .hostname = ctx->hostname,
-        .cwd = ctx->cwd,
+        .username = ctx->user.username,
+        .hostname = ctx->user.hostname,
+        .cwd = ctx->user.cwd,
         .last_command = ctx->last_command,
         .terminal_buffer = ctx->terminal_buffer
     };
@@ -271,7 +271,7 @@ static int send_http_request(const char *url, const char *api_key, json_object *
     return (res == CURLE_OK) ? 0 : -1;
 }
 
-int send_to_llm(const char *input, const context_t *ctx, const config_t *config, suggestion_t *suggestion) {
+int send_to_llm(const char *input, const session_context_t *ctx, const config_t *config, suggestion_t *suggestion) {
     if (!input || !ctx || !config || !suggestion) return -1;
 
     // Validate provider

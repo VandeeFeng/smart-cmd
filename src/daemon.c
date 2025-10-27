@@ -28,180 +28,58 @@ void daemon_utils_signal_handler(int signum) {
 }
 
 int setup_daemon_signal_handlers() {
-    struct sigaction sa;
-    sa.sa_handler = daemon_utils_signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-
-    if (sigaction(SIGTERM, &sa, NULL) == -1 ||
-        sigaction(SIGINT, &sa, NULL) == -1 ||
-        sigaction(SIGCHLD, &sa, NULL) == -1) {
-        perror("sigaction");
-        return -1;
-    }
+    setup_signal_handlers(daemon_utils_signal_handler);
     return 0;
 }
 
-int generate_session_id(char *session_id, size_t len) {
-    if (!session_id || len < 17) return -1;
-
-    // Get current time and process ID for uniqueness
-    struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
-        perror("clock_gettime");
-        return -1;
-    }
-
-    // Use timestamp and PID for session ID
-    unsigned long hash = ((unsigned long)ts.tv_sec ^ ts.tv_nsec) ^ getpid();
-
-    // Convert to hex string
-    snprintf(session_id, len, "%016lx", hash);
-    return 0;
-}
+// generate_session_id function moved to utils.c
 
 int secure_temp_file(char *path, size_t path_size, const char *prefix) {
-    if (!path || path_size < 64) return -1;
+    RETURN_IF_NULL(path, -1);
+    RETURN_IF_NULL(prefix, -1);
 
-    const char *tmp_dir = getenv("TMPDIR");
-    if (!tmp_dir) tmp_dir = "/tmp";
-
-    char session_id[32];
+    char session_id[MAX_SESSION_ID];
     if (generate_session_id(session_id, sizeof(session_id)) == -1) {
         return -1;
     }
 
-    snprintf(path, path_size, "%s/%s.%s.%d", tmp_dir, prefix, session_id, getpid());
-    return 0;
+    char session_filename[MAX_SESSION_ID + 16];
+    snprintf(session_filename, sizeof(session_filename), "%s.%d", session_id, getpid());
+
+    return generate_temp_file_path(path, path_size, prefix, session_filename);
 }
 
 int create_daemon_lock(const char *lock_file, pid_t pid) {
-    if (!lock_file) return -1;
-
-    // Create directory for lock file if needed
-    char *lock_dir = strdup(lock_file);
-    if (!lock_dir) return -1;
-
-    char *last_slash = strrchr(lock_dir, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-        if (mkdir(lock_dir, 0755) == -1 && errno != EEXIST) {
-            free(lock_dir);
-            perror("mkdir");
-            return -1;
-        }
-    }
-    free(lock_dir);
-
-    // Try to create lock file exclusively
-    int fd = open(lock_file, O_CREAT | O_WRONLY | O_EXCL, 0644);
-    if (fd == -1) {
-        if (errno == EEXIST) {
-            // Lock file exists, check if process is still running
-            if (check_daemon_running(lock_file)) {
-                return -1; // Another daemon is running
-            }
-            // Stale lock file, remove it
-            unlink(lock_file);
-            fd = open(lock_file, O_CREAT | O_WRONLY | O_EXCL, 0644);
-            if (fd == -1) {
-                perror("open lock file");
-                return -1;
-            }
-        } else {
-            perror("open lock file");
-            return -1;
-        }
-    }
-
-    // Write PID to lock file
-    char pid_str[32];
-    int pid_len = snprintf(pid_str, sizeof(pid_str), "%d\n", pid);
-    if (write(fd, pid_str, pid_len) != pid_len) {
-        close(fd);
-        unlink(lock_file);
-        perror("write PID to lock file");
-        return -1;
-    }
-
-    // Sync to ensure PID is written to disk
-    if (fsync(fd) == -1) {
-        close(fd);
-        unlink(lock_file);
-        perror("fsync lock file");
-        return -1;
-    }
-
-    close(fd);
-    return 0;
+    return create_lock_file_with_pid(lock_file, pid);
 }
 
 int check_daemon_running(const char *lock_file) {
-    if (!lock_file) return 0;
+    RETURN_IF_NULL(lock_file, 0);
 
     FILE *f = fopen(lock_file, "r");
     if (!f) return 0;
 
     pid_t stored_pid;
-    if (fscanf(f, "%d", &stored_pid) != 1) {
-        fclose(f);
-        return 0;
+    int result = 0;
+    if (fscanf(f, "%d", &stored_pid) == 1) {
+        result = is_process_running(stored_pid);
     }
     fclose(f);
 
-    // Check if process is still running
-    if (kill(stored_pid, 0) == 0) {
-        return 1; // Process is running
-    }
-
-    return 0; // Process is not running
+    return result;
 }
 
 int create_daemon_lock_force(const char *lock_file, pid_t pid) {
-    if (!lock_file) return -1;
-
-    // Create directory for lock file if needed
-    char *lock_dir = strdup(lock_file);
-    if (!lock_dir) return -1;
-
-    char *last_slash = strrchr(lock_dir, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-        if (mkdir(lock_dir, 0755) == -1 && errno != EEXIST) {
-            free(lock_dir);
-            perror("mkdir");
-            return -1;
-        }
-    }
-    free(lock_dir);
+    RETURN_IF_NULL(lock_file, -1);
 
     // Remove existing lock file if it exists (force overwrite)
     unlink(lock_file);
 
-    // Create new lock file
-    int fd = open(lock_file, O_CREAT | O_WRONLY | O_EXCL, 0644);
-    if (fd == -1) {
-        perror("open lock file");
-        return -1;
-    }
-
-    // Write PID to lock file
-    char pid_str[32];
-    int pid_len = snprintf(pid_str, sizeof(pid_str), "%d\n", pid);
-    if (write(fd, pid_str, pid_len) != pid_len) {
-        close(fd);
-        unlink(lock_file);
-        perror("write PID to lock file");
-        return -1;
-    }
-
-    close(fd);
-    return 0;
+    return create_lock_file_with_pid(lock_file, pid);
 }
 
 int cleanup_daemon_lock(const char *lock_file) {
-    if (!lock_file) return -1;
-    return unlink(lock_file);
+    return cleanup_lock_file(lock_file);
 }
 
 int check_safe_environment() {
@@ -234,7 +112,7 @@ int check_safe_environment() {
     return 0;
 }
 
-int start_daemon_process(daemon_info_t *info) {
+int start_daemon_process(daemon_session_t *info) {
     if (!info) return -1;
 
     // Check safe environment first
@@ -243,31 +121,29 @@ int start_daemon_process(daemon_info_t *info) {
     }
 
     // Generate session ID
-    if (generate_session_id(info->session_id, sizeof(info->session_id)) == -1) {
+    if (generate_session_id(info->paths.session_id, sizeof(info->paths.session_id)) == -1) {
         fprintf(stderr, "Failed to generate session ID\n");
         return -1;
     }
 
-    // Setup socket path
-    if (secure_temp_file(info->socket_path, sizeof(info->socket_path), "smart-cmd.socket") == -1) {
+    // Setup paths using new utility functions
+    if (generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path), info->paths.session_id) == -1) {
         fprintf(stderr, "Failed to create socket path\n");
         return -1;
     }
 
-    // Setup lock file path
-    if (secure_temp_file(info->lock_file, sizeof(info->lock_file), "smart-cmd.lock") == -1) {
+    if (generate_lock_path(info->paths.lock_file, sizeof(info->paths.lock_file), info->paths.session_id) == -1) {
         fprintf(stderr, "Failed to create lock file path\n");
         return -1;
     }
 
-    // Setup log file path
-    if (secure_temp_file(info->log_file, sizeof(info->log_file), "smart-cmd.log") == -1) {
+    if (generate_log_path(info->paths.log_file, sizeof(info->paths.log_file), info->paths.session_id) == -1) {
         fprintf(stderr, "Failed to create log file path\n");
         return -1;
     }
 
     // Create daemon lock
-    if (create_daemon_lock(info->lock_file, getpid()) == -1) {
+    if (create_daemon_lock(info->paths.lock_file, getpid()) == -1) {
         fprintf(stderr, "Failed to create daemon lock - another instance may be running\n");
         return -1;
     }
@@ -276,7 +152,7 @@ int start_daemon_process(daemon_info_t *info) {
     pid_t pid = fork();
     if (pid == -1) {
         perror("fork");
-        cleanup_daemon_lock(info->lock_file);
+        cleanup_daemon_lock(info->paths.lock_file);
         return -1;
     }
 
@@ -326,8 +202,8 @@ int start_daemon_process(daemon_info_t *info) {
         }
 
         // Cleanup
-        cleanup_daemon_lock(info->lock_file);
-        unlink(info->socket_path);
+        cleanup_daemon_lock(info->paths.lock_file);
+        unlink(info->paths.socket_path);
         exit(0);
     } else {
         // Parent process
@@ -342,17 +218,17 @@ int start_daemon_process(daemon_info_t *info) {
         if (kill(pid, 0) == -1) {
             fprintf(stderr, "Daemon failed to start\n");
             info->active = 0;
-            cleanup_daemon_lock(info->lock_file);
+            cleanup_daemon_lock(info->paths.lock_file);
             return -1;
         }
 
         printf("Daemon started successfully (PID: %d, Session: %s)\n",
-               pid, info->session_id);
+               pid, info->paths.session_id);
         return 0;
     }
 }
 
-int stop_daemon_process(daemon_info_t *info) {
+int stop_daemon_process(daemon_session_t *info) {
     if (!info || !info->active) return -1;
 
     // Send SIGTERM to daemon
@@ -369,21 +245,20 @@ int stop_daemon_process(daemon_info_t *info) {
     }
 
     // Cleanup
-    cleanup_daemon_lock(info->lock_file);
-    unlink(info->socket_path);
+    cleanup_daemon_lock(info->paths.lock_file);
+    unlink(info->paths.socket_path);
     info->active = 0;
 
     printf("Daemon stopped successfully\n");
     return 0;
 }
 
-int daemon_is_active(daemon_info_t *info) {
-    if (!info) return 0;
+int daemon_is_active(daemon_session_t *info) {
+    RETURN_IF_NULL(info, 0);
 
     if (!info->active) return 0;
 
-    // Check if process is still running
-    if (kill(info->daemon_pid, 0) == -1) {
+    if (!is_process_running(info->daemon_pid)) {
         info->active = 0;
         return 0;
     }
@@ -408,7 +283,7 @@ int cleanup_old_sessions(const char *base_path, int max_age_hours) {
         }
 
         // Only process smart-cmd files
-        if (strstr(entry->d_name, "smart-cmd.") != entry->d_name) {
+        if (!starts_with(entry->d_name, "smart-cmd.")) {
             continue;
         }
 

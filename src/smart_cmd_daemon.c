@@ -9,7 +9,7 @@
 
 #define MAX_IPC_MESSAGE_SIZE 4096
 
-static daemon_info_t g_daemon_info = {0};
+static daemon_session_t g_daemon_info = {0};
 static daemon_pty_t g_daemon_pty = {0};
 static command_history_manager_t g_command_history = {0};
 static volatile sig_atomic_t g_running = 1;
@@ -27,18 +27,8 @@ void daemon_signal_handler(int signum) {
     }
 }
 
-int setup_signal_handlers() {
-    struct sigaction sa;
-    sa.sa_handler = daemon_signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-
-    if (sigaction(SIGTERM, &sa, NULL) == -1 ||
-        sigaction(SIGINT, &sa, NULL) == -1 ||
-        sigaction(SIGCHLD, &sa, NULL) == -1) {
-        perror("sigaction");
-        return -1;
-    }
+int setup_daemon_main_signal_handlers() {
+    setup_signal_handlers(daemon_signal_handler);
     return 0;
 }
 
@@ -57,10 +47,9 @@ static void print_version() {
     printf("smart-cmd-daemon %s\n", VERSION);
 }
 
-int find_daemon_info(daemon_info_t *info) {
-    // Look for lock files in /tmp
-    const char *tmp_dir = getenv("TMPDIR");
-    if (!tmp_dir) tmp_dir = "/tmp";
+int find_daemon_info(daemon_session_t *info) {
+    // Look for lock files in temp directory
+    const char *tmp_dir = get_smart_cmd_tmpdir();
 
     DIR *dir = opendir(tmp_dir);
     if (!dir) {
@@ -69,33 +58,32 @@ int find_daemon_info(daemon_info_t *info) {
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strncmp(entry->d_name, "smart-cmd.lock.", 15) == 0) {
-            char lock_path[512];
+        if (starts_with(entry->d_name, LOCK_FILE_PREFIX ".")) {
+            char lock_path[MAX_PATH];
             snprintf(lock_path, sizeof(lock_path), "%s/%s", tmp_dir, entry->d_name);
 
             FILE *f = fopen(lock_path, "r");
             if (f) {
                 pid_t pid;
                 if (fscanf(f, "%d", &pid) == 1) {
-                    if (kill(pid, 0) == 0) {
+                    if (is_process_running(pid)) {
                         // Found running daemon
                         info->daemon_pid = pid;
-                        if (strlen(lock_path) >= sizeof(info->lock_file)) {
-                            // Path too long, skip this daemon
-                            fclose(f);
-                            continue;
-                        }
-                        snprintf(info->lock_file, sizeof(info->lock_file), "%s", lock_path);
+                        safe_string_copy(info->paths.lock_file, lock_path, sizeof(info->paths.lock_file));
 
                         // Extract session ID from lock file name (smart-cmd.lock.{session_id})
                         const char *session_id = strrchr(entry->d_name, '.');
                         if (session_id && strlen(session_id + 1) > 0) {
-                            snprintf(info->socket_path, sizeof(info->socket_path),
-                                    "%s/smart-cmd.socket.%s", tmp_dir, session_id + 1);
+                            safe_string_copy(info->paths.session_id, session_id + 1,
+                                          sizeof(info->paths.session_id));
+                            generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path),
+                                              info->paths.session_id);
                         } else {
                             // Fallback: try PID-based socket path
-                            snprintf(info->socket_path, sizeof(info->socket_path),
-                                    "%s/smart-cmd.socket.%d", tmp_dir, pid);
+                            char pid_session[32];
+                            snprintf(pid_session, sizeof(pid_session), "%d", pid);
+                            generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path),
+                                              pid_session);
                         }
 
                         fclose(f);
@@ -113,13 +101,13 @@ int find_daemon_info(daemon_info_t *info) {
 }
 
 int daemon_status() {
-    daemon_info_t info;
+    daemon_session_t info;
     memset(&info, 0, sizeof(info));
 
     if (find_daemon_info(&info) == 0) {
         printf("Daemon is running (PID: %d)\n", info.daemon_pid);
-        printf("Socket: %s\n", info.socket_path);
-        printf("Lock: %s\n", info.lock_file);
+        printf("Socket: %s\n", info.paths.socket_path);
+        printf("Lock: %s\n", info.paths.lock_file);
         return 0;
     } else {
         printf("Daemon is not running\n");
@@ -128,7 +116,7 @@ int daemon_status() {
 }
 
 int daemon_stop() {
-    daemon_info_t info;
+    daemon_session_t info;
     memset(&info, 0, sizeof(info));
 
     if (find_daemon_info(&info) == -1) {
@@ -148,11 +136,11 @@ int daemon_stop() {
     // Wait for daemon to stop
     int attempts = 10;
     while (attempts-- > 0) {
-        if (kill(info.daemon_pid, 0) == -1) {
+        if (!is_process_running(info.daemon_pid)) {
             // Daemon stopped
             printf("stopped\n");
-            cleanup_daemon_lock(info.lock_file);
-            unlink(info.socket_path);
+            cleanup_lock_file(info.paths.lock_file);
+            unlink(info.paths.socket_path);
             return 0;
         }
         sleep(1);
@@ -171,8 +159,8 @@ int daemon_stop() {
     sleep(1);
     if (kill(info.daemon_pid, 0) == -1) {
         printf("killed\n");
-        cleanup_daemon_lock(info.lock_file);
-        unlink(info.socket_path);
+        cleanup_daemon_lock(info.paths.lock_file);
+        unlink(info.paths.socket_path);
         return 0;
     }
 
@@ -223,7 +211,7 @@ int daemon_main_loop(int server_fd, int debug) {
                     add_command_to_history(&g_command_history, input);
 
                     // Use PTY buffer for context if available
-                    context_t ctx;
+                    session_context_t ctx;
                     memset(&ctx, 0, sizeof(ctx));
                     if (g_daemon_pty.active) {
                         get_daemon_pty_context(&g_daemon_pty, ctx.terminal_buffer, sizeof(ctx.terminal_buffer));
@@ -231,20 +219,20 @@ int daemon_main_loop(int server_fd, int debug) {
 
                     // Get current environment context
                     if (cwd && strlen(cwd) > 0) {
-                        strncpy(ctx.cwd, cwd, sizeof(ctx.cwd) - 1);
+                        strncpy(ctx.user.cwd, cwd, sizeof(ctx.user.cwd) - 1);
                     } else {
-                        getcwd(ctx.cwd, sizeof(ctx.cwd) - 1);
+                        getcwd(ctx.user.cwd, sizeof(ctx.user.cwd) - 1);
                     }
                     struct passwd *pw = getpwuid(getuid());
                     if (pw) {
-                        snprintf(ctx.username, sizeof(ctx.username), "%s", pw->pw_name);
+                        snprintf(ctx.user.username, sizeof(ctx.user.username), "%s", pw->pw_name);
                     }
-                    gethostname(ctx.hostname, sizeof(ctx.hostname) - 1);
+                    gethostname(ctx.user.hostname, sizeof(ctx.user.hostname) - 1);
 
                     printf("Context before LLM call:\n");
-                    printf("  CWD: %s\n", ctx.cwd);
-                    printf("  User: %s\n", ctx.username);
-                    printf("  Host: %s\n", ctx.hostname);
+                    printf("  CWD: %s\n", ctx.user.cwd);
+                    printf("  User: %s\n", ctx.user.username);
+                    printf("  Host: %s\n", ctx.user.hostname);
                     printf("  Terminal Buffer: <start>%s<end>\n", ctx.terminal_buffer);
                     fflush(stdout);
 
@@ -443,25 +431,21 @@ int main(int argc, char *argv[]) {
 
     // Now that we are daemonized, continue with setup
     g_daemon_info.daemon_pid = getpid();
-    strncpy(g_daemon_info.session_id, session_id, sizeof(g_daemon_info.session_id));
+    strncpy(g_daemon_info.paths.session_id, session_id, sizeof(g_daemon_info.paths.session_id));
 
     // Setup signal handlers
-    if (setup_signal_handlers() == -1) {
-        printf("Failed to setup signal handlers\n");
-        fflush(stdout);
-        return 1;
-    }
+    setup_daemon_main_signal_handlers();
 
     // Finish setting up paths
-    snprintf(g_daemon_info.socket_path, sizeof(g_daemon_info.socket_path),
-            "%s/smart-cmd.socket.%s", tmp_dir, g_daemon_info.session_id);
-    snprintf(g_daemon_info.lock_file, sizeof(g_daemon_info.lock_file),
-            "%s/smart-cmd.lock.%s", tmp_dir, g_daemon_info.session_id);
-    strncpy(g_daemon_info.log_file, log_file_path, sizeof(g_daemon_info.log_file) - 1);
-    g_daemon_info.log_file[sizeof(g_daemon_info.log_file) - 1] = '\0'; // Ensure null termination
+    snprintf(g_daemon_info.paths.socket_path, sizeof(g_daemon_info.paths.socket_path),
+            "%s/smart-cmd.socket.%s", tmp_dir, g_daemon_info.paths.session_id);
+    snprintf(g_daemon_info.paths.lock_file, sizeof(g_daemon_info.paths.lock_file),
+            "%s/smart-cmd.lock.%s", tmp_dir, g_daemon_info.paths.session_id);
+    strncpy(g_daemon_info.paths.log_file, log_file_path, sizeof(g_daemon_info.paths.log_file) - 1);
+    g_daemon_info.paths.log_file[sizeof(g_daemon_info.paths.log_file) - 1] = '\0'; // Ensure null termination
 
     // Create lock file
-    FILE *lock_file = fopen(g_daemon_info.lock_file, "w");
+    FILE *lock_file = fopen(g_daemon_info.paths.lock_file, "w");
     if (lock_file) {
         fprintf(lock_file, "%d", g_daemon_info.daemon_pid);
         fclose(lock_file);
@@ -472,14 +456,14 @@ int main(int argc, char *argv[]) {
     }
 
     // Initialize command history
-    if (init_command_history(&g_command_history, g_daemon_info.session_id) == -1) {
+    if (init_command_history(&g_command_history, g_daemon_info.paths.session_id) == -1) {
         printf("Failed to initialize command history\n");
         fflush(stdout);
         return 1;
     }
 
     // Create IPC socket
-    int server_fd = create_ipc_socket(g_daemon_info.socket_path);
+    int server_fd = create_ipc_socket(g_daemon_info.paths.socket_path);
     if (server_fd == -1) {
         printf("Failed to create IPC socket\n");
         fflush(stdout);
@@ -490,14 +474,14 @@ int main(int argc, char *argv[]) {
     // Setup PTY
     config_t config;
     if (load_config(&config) == 0 && config.enable_proxy_mode) {
-        if (setup_daemon_pty(&g_daemon_pty, g_daemon_info.session_id) != 0) {
+        if (setup_daemon_pty(&g_daemon_pty, g_daemon_info.paths.session_id) != 0) {
             printf("Warning: Failed to setup PTY proxy, continuing without it\n");
             fflush(stdout);
         }
     }
 
     printf("Daemon setup complete. PID: %d, Session: %s, Socket: %s, Server FD: %d\n",
-           g_daemon_info.daemon_pid, g_daemon_info.session_id, g_daemon_info.socket_path, server_fd);
+           g_daemon_info.daemon_pid, g_daemon_info.paths.session_id, g_daemon_info.paths.socket_path, server_fd);
     fflush(stdout);
 
     // Main daemon loop
@@ -508,9 +492,9 @@ int main(int argc, char *argv[]) {
     cleanup_command_history(&g_command_history);
     cleanup_daemon_pty(&g_daemon_pty);
     close(server_fd);
-    cleanup_daemon_lock(g_daemon_info.lock_file);
-    unlink(g_daemon_info.socket_path);
-    unlink(g_daemon_info.log_file);
+    cleanup_daemon_lock(g_daemon_info.paths.lock_file);
+    unlink(g_daemon_info.paths.socket_path);
+    unlink(g_daemon_info.paths.log_file);
 
     return result;
 }
