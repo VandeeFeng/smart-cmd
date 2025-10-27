@@ -14,7 +14,8 @@ _SMART_CMD_SHOWING_HINT=0
 # Configuration and daemon state are now handled by the C binary.
 
 # Paths
-_SMART_CMD_BIN="${SMART_CMD_BIN:-$HOME/.local/bin/smart-cmd-completion}"
+_SMART_CMD_BIN="${SMART_CMD_BIN:-$HOME/.local/bin/smart-cmd}"
+_SMART_CMD_COMPLETION_BIN="${SMART_CMD_COMPLETION_BIN:-$HOME/.local/bin/smart-cmd-completion}"
 _SMART_CMD_DAEMON_BIN="${SMART_CMD_DAEMON_BIN:-$HOME/.local/bin/smart-cmd-daemon}"
 
 # Enable/disable smart completion
@@ -49,8 +50,8 @@ smart-cmd-mode() {
 _smart-cmd-get-suggestions() {
   local current_line="$1"
 
-  if [[ -x "$_SMART_CMD_BIN" ]]; then
-    "$_SMART_CMD_BIN" --input "$current_line" 2>/dev/null
+  if [[ -x "$_SMART_CMD_COMPLETION_BIN" ]]; then
+    echo "$current_line" | "$_SMART_CMD_COMPLETION_BIN" 2>/dev/null
   fi
 }
 
@@ -156,7 +157,21 @@ _smart-cmd-complete() {
 # Setup key binding
 _smart-cmd-setup() {
   if [[ $- == *i* ]] && command -v bind >/dev/null 2>&1; then
-    echo "Smart-cmd enabled" >&2
+    # Check if daemon mode is enabled and auto-start daemon if needed
+    local status_output
+    status_output=$("$_SMART_CMD_BIN" status 2>/dev/null)
+
+    if [[ $? -eq 0 ]] && echo "$status_output" | grep -q "DAEMON (PTY mode)"; then
+      # Daemon mode is enabled, check if daemon is running
+      if ! echo "$status_output" | grep -q "Daemon is running"; then
+        # Daemon mode is enabled but daemon is not running, start it
+        "$_SMART_CMD_BIN" start >/dev/null 2>&1 &
+      fi
+    fi
+
+    # Show startup info using C function (will respect show_startup_messages config)
+    echo "startup" | "$_SMART_CMD_BIN" 2>/dev/null
+
     bind -x '"\C-o": _smart-cmd-complete'
     bind -x '"\e[C": _smart-cmd-accept-hint'
     bind -x '"\e": _smart-cmd-clear-hint'

@@ -134,7 +134,9 @@ int cmd_status();
 int cmd_start();
 int cmd_stop();
 int cmd_mode();
+int cmd_help();
 void show_config();
+int show_startup_info();
 
 // Print functions for main binary only
 #ifndef DAEMON_BINARY

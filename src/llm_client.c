@@ -15,9 +15,6 @@ typedef struct {
 } llm_request_params_t;
 
 typedef struct {
-    const char *username;
-    const char *hostname;
-    const char *cwd;
     const char *last_command;
     const char *terminal_buffer;
 } prompt_context_t;
@@ -38,12 +35,7 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, response
 static void build_system_prompt(char *buffer, size_t buffer_size, const prompt_context_t *ctx) {
     int ret = snprintf(buffer, buffer_size,
                        "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
-                       "CONTEXT:\n"
-                       "User: %s@%s\n"
-                       "Directory: %s\n",
-                       ctx->username ? ctx->username : "unknown",
-                       ctx->hostname ? ctx->hostname : "unknown",
-                       ctx->cwd ? ctx->cwd : "unknown");
+                       "CONTEXT:\n");
 
     if (ret > 0 && (size_t)ret < buffer_size && ctx->terminal_buffer && strlen(ctx->terminal_buffer) > 0) {
         size_t remaining = buffer_size - ret;
@@ -151,9 +143,6 @@ static json_object *create_openai_request(const char *input, const char *system_
 
 static json_object* create_llm_request(const char *input, const session_context_t *ctx, const config_t *config) {
     prompt_context_t prompt_ctx = {
-        .username = ctx->user.username,
-        .hostname = ctx->user.hostname,
-        .cwd = ctx->user.cwd,
         .last_command = ctx->last_command,
         .terminal_buffer = ctx->terminal_buffer
     };

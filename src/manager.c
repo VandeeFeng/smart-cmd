@@ -3,6 +3,10 @@
 #include "defaults.h"
 #include <glob.h>
 
+#ifndef DAEMON_BINARY
+void print_usage(const char *program_name);
+#endif
+
 int find_running_daemon(daemon_session_t *info) {
     RETURN_IF_NULL(info, -1);
 
@@ -225,6 +229,12 @@ int cmd_mode() {
     return 0;
 }
 
+#ifndef DAEMON_BINARY
+int cmd_help() {
+    print_usage("smart-cmd");
+    return 0;
+}
+#endif
 
 void show_config() {
     config_t config;
@@ -242,6 +252,28 @@ void show_config() {
     }
 }
 
+int show_startup_info() {
+    config_t config;
+    if (load_config(&config) != 0) {
+        return 1; // If config fails, don't show anything
+    }
+
+    // Only show startup info if enabled in config
+    if (config.show_startup_messages) {
+        printf("Smart-cmd enabled\n");
+
+        if (config.enable_proxy_mode) {
+            daemon_session_t info = {0};
+            if (find_running_daemon(&info) == 0) {
+                printf("✔  Daemon is running (PID: %d, Session: %s)\n",
+                       info.daemon_pid, info.paths.session_id);
+            }
+        }
+    }
+
+    return 0;
+}
+
 void print_usage(const char *program_name) {
     printf("Usage: %s [options] [command]\n", program_name);
     printf("Smart Command Completion Utility\n\n");
@@ -250,8 +282,6 @@ void print_usage(const char *program_name) {
     printf("  -t, --test     Run basic functionality tests\n");
     printf("  -v, --version  Show version information\n");
     printf("  -c, --config   Show current configuration\n");
-    printf("  -i, --input    Input command for completion\n");
-    printf("  -x, --context  JSON context for completion\n");
     printf("\n");
     printf("Commands:\n");
     printf("  toggle         Enable/disable smart completion\n");
@@ -259,6 +289,7 @@ void print_usage(const char *program_name) {
     printf("  start          Manually start daemon\n");
     printf("  stop           Stop daemon\n");
     printf("  mode           Show current mode and configuration\n");
+    printf("  help           Show this help message\n");
     printf("\n");
     printf("Working Modes:\n");
     printf("  Basic Mode:     Direct AI completion without persistent context\n");

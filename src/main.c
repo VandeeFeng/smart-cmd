@@ -15,6 +15,7 @@ static const command_t commands[] = {
     {"start", cmd_start},
     {"stop", cmd_stop},
     {"mode", cmd_mode},
+    {"help", cmd_help},
     {NULL, NULL}
 };
 
@@ -47,28 +48,36 @@ static int route_command(const char *command_name) {
     return -1;
 }
 
+// Handle startup info from stdin
+static int handle_startup_from_stdin() {
+    if (isatty(STDIN_FILENO)) {
+        return 0; // No stdin input, exit silently
+    }
+
+    char buffer[32];
+    if (fgets(buffer, sizeof(buffer), stdin)) {
+        buffer[strcspn(buffer, "\n")] = '\0';
+        if (strcmp(buffer, "startup") == 0) {
+            return show_startup_info();
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     static struct option long_options[] = {
         {"help",    no_argument,       0, 'h'},
         {"test",    no_argument,       0, 't'},
         {"version", no_argument,       0, 'v'},
         {"config",  no_argument,       0, 'c'},
-        {"input",   required_argument, 0, 'i'},
-        {"context", required_argument, 0, 'x'},
         {0, 0, 0, 0}
     };
 
     int option_index = 0;
     int c;
-    char *input_str = NULL;
-    char *context_str = NULL;
 
-    while ((c = getopt_long(argc, argv, "htvci:x:", long_options, &option_index)) != -1) {
-        if (c == 'i') {
-            input_str = optarg;
-        } else if (c == 'x') {
-            context_str = optarg;
-        } else if (c != '?') {
+    while ((c = getopt_long(argc, argv, "htvc", long_options, &option_index)) != -1) {
+        if (c != '?') {
             int result = handle_long_options(c, argv[0]);
             if (result >= 0) return result;
         }
@@ -78,21 +87,8 @@ int main(int argc, char *argv[]) {
         const char *command = argv[optind];
         int result = route_command(command);
         if (result >= 0) return result;
-
-        if (!input_str) {
-            char *fallback_input = concat_remaining_args(argc, argv, optind);
-            if (fallback_input) {
-                result = run_completion_mode(fallback_input, NULL);
-                free(fallback_input);
-                return result;
-            }
-        }
     }
 
-    if (input_str) {
-        return run_completion_mode(input_str, context_str);
-    }
-
-    print_usage(argv[0]);
-    return 0;
+    // Check for stdin input (startup command)
+    return handle_startup_from_stdin();
 }

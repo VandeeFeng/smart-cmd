@@ -89,14 +89,9 @@ if pgrep -f "smart-cmd" >/dev/null 2>&1; then
     echo "⚠️  Found remaining smart-cmd processes:"
     pgrep -af "smart-cmd" || true
     echo ""
-    read -p "❓ Kill remaining processes? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        pkill -f "smart-cmd" || true
-        echo "✓ Remaining processes killed"
-    else
-        echo "✓ Processes left running"
-    fi
+    echo "Stopping all smart-cmd processes..."
+    pkill -f "smart-cmd" || true
+    echo "✓ All smart-cmd processes stopped"
 else
     echo "✓ No remaining smart-cmd processes found"
 fi

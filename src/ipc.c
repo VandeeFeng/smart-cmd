@@ -111,7 +111,7 @@ int accept_ipc_connection(int server_fd) {
     int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
     if (client_fd == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0; // No pending connections
+            return 0;
         }
         perror("accept");
         return -1;
@@ -190,7 +190,7 @@ int receive_ipc_message(int fd, char *buffer, size_t buffer_size) {
     ssize_t received = recv(fd, &header, sizeof(header), 0);
     if (received != sizeof(header)) {
         if (received == 0) {
-            return 0; // Connection closed
+            return 0;
         }
         perror("recv header");
         return -1;
@@ -216,7 +216,7 @@ int receive_ipc_message(int fd, char *buffer, size_t buffer_size) {
     received = recv(fd, buffer, header.length, 0);
     if (received != (ssize_t)header.length) {
         if (received == 0) {
-            return 0; // Connection closed
+            return 0;
         }
         perror("recv message");
         return -1;
@@ -313,7 +313,7 @@ int ping_daemon(const char *socket_path) {
     close(client_fd);
 
     if (result > 0 && strcmp(response, "pong") == 0) {
-        return 0; // Daemon is alive
+        return 0;
     }
 
     return -1;

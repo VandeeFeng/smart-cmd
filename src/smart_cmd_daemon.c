@@ -196,16 +196,9 @@ int daemon_main_loop(int server_fd, int debug) {
                     snprintf(response, sizeof(response), "%s", "pong");
                 } else if (strncmp(request, "suggestion:", 11) == 0) {
                     printf("Received suggestion request: %s\n", request);
-                    // Extract input from request: suggestion:<cwd>:<command>
-                    char *payload = request + 11;
-                    char *cwd = strsep(&payload, ":");
-                    const char *input = payload;
-
-                    if (!input) {
-                        input = cwd;
-                        cwd = NULL;
-                    }
-                    printf("Parsed CWD: %s, Input: %s\n", cwd ? cwd : "(null)", input);
+                    // Extract input from request: suggestion:<command>
+                    const char *input = request + 11;
+                    printf("Parsed Input: %s\n", input);
 
                     // Add command to history
                     add_command_to_history(&g_command_history, input);
@@ -217,22 +210,7 @@ int daemon_main_loop(int server_fd, int debug) {
                         get_daemon_pty_context(&g_daemon_pty, ctx.terminal_buffer, sizeof(ctx.terminal_buffer));
                     }
 
-                    // Get current environment context
-                    if (cwd && strlen(cwd) > 0) {
-                        strncpy(ctx.user.cwd, cwd, sizeof(ctx.user.cwd) - 1);
-                    } else {
-                        getcwd(ctx.user.cwd, sizeof(ctx.user.cwd) - 1);
-                    }
-                    struct passwd *pw = getpwuid(getuid());
-                    if (pw) {
-                        snprintf(ctx.user.username, sizeof(ctx.user.username), "%s", pw->pw_name);
-                    }
-                    gethostname(ctx.user.hostname, sizeof(ctx.user.hostname) - 1);
-
                     printf("Context before LLM call:\n");
-                    printf("  CWD: %s\n", ctx.user.cwd);
-                    printf("  User: %s\n", ctx.user.username);
-                    printf("  Host: %s\n", ctx.user.hostname);
                     printf("  Terminal Buffer: <start>%s<end>\n", ctx.terminal_buffer);
                     fflush(stdout);
 

@@ -14,11 +14,12 @@ typedef struct {
 } completion_context_t;
 
 static void print_completion_usage(const char *program_name) {
-    printf("Usage: %s [OPTIONS]\n", program_name);
+    printf("Usage: %s\n", program_name);
     printf("Smart Command Completion Backend\n\n");
+    printf("Reads command input from stdin.\n");
+    printf("First line: command to complete\n");
+    printf("Second line (optional): JSON context\n\n");
     printf("Options:\n");
-    printf("  -i, --input TEXT      Current command line input\n");
-    printf("  -c, --context JSON    Context information (JSON format)\n");
     printf("  -h, --help           Show this help message\n");
     printf("  -v, --version        Show version information\n");
 }
@@ -122,16 +123,6 @@ static int get_multiple_suggestions(const char *input, const completion_context_
     return count;
 }
 
-static void print_suggestions_json(suggestion_t *suggestions, int count) {
-    printf("{\"suggestions\":[");
-
-    for (int i = 0; i < count; i++) {
-        if (i > 0) printf(",");
-        printf("\"%c%s\"", suggestions[i].type, suggestions[i].suggestion);
-    }
-
-    printf("]}\n");
-}
 
 static void print_suggestions_plain(suggestion_t *suggestions, int count) {
     if (count > 0) {
@@ -144,8 +135,6 @@ int main(int argc, char *argv[]) {
     char context_json[MAX_CONTEXT_LEN] = {0};
 
     static struct option long_options[] = {
-        {"input", required_argument, 0, 'i'},
-        {"context", required_argument, 0, 'c'},
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 'v'},
         {0, 0, 0, 0}
@@ -154,14 +143,8 @@ int main(int argc, char *argv[]) {
     int option_index = 0;
     int c;
 
-    while ((c = getopt_long(argc, argv, "i:c:hv", long_options, &option_index)) != -1) {
+    while ((c = getopt_long(argc, argv, "hv", long_options, &option_index)) != -1) {
         switch (c) {
-        case 'i':
-            strncpy(input, optarg, sizeof(input) - 1);
-            break;
-        case 'c':
-            strncpy(context_json, optarg, sizeof(context_json) - 1);
-            break;
         case 'h':
             print_completion_usage(argv[0]);
             return 0;
@@ -176,6 +159,22 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // Read input from stdin
+    if (isatty(STDIN_FILENO)) {
+        fprintf(stderr, "Error: Input must be provided via stdin\n");
+        return 1;
+    }
+
+    // Read first line - command to complete
+    if (fgets(input, sizeof(input), stdin)) {
+        input[strcspn(input, "\n")] = '\0';
+    }
+
+    // Read second line - optional JSON context
+    if (fgets(context_json, sizeof(context_json), stdin)) {
+        context_json[strcspn(context_json, "\n")] = '\0';
+    }
+
     // Load configuration
     config_t config;
     if (load_config(&config) == -1) {
@@ -185,23 +184,16 @@ int main(int argc, char *argv[]) {
 
     // Parse context
     completion_context_t ctx;
-    if (parse_context_json(context_json, &ctx) == -1) {
-        fprintf(stderr, "Failed to parse context JSON\n");
-        return 1;
-    }
-
-    // If no input provided, try to get it from environment or stdin
-    if (strlen(input) == 0) {
-        const char *env_input = getenv("SMART_CMD_INPUT");
-        if (env_input) {
-            strncpy(input, env_input, sizeof(input) - 1);
-        } else {
-            // Read from stdin if available
-            if (!isatty(STDIN_FILENO)) {
-                if (fgets(input, sizeof(input), stdin)) {
-                    input[strcspn(input, "\n")] = '\0';
-                }
-            }
+    if (strlen(context_json) > 0) {
+        if (parse_context_json(context_json, &ctx) == -1) {
+            fprintf(stderr, "Failed to parse context JSON\n");
+            return 1;
+        }
+    } else {
+        // Use default context if no JSON provided
+        if (parse_context_json(NULL, &ctx) == -1) {
+            fprintf(stderr, "Failed to create default context\n");
+            return 1;
         }
     }
 
