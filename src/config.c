@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "smart_cmd.h"
+#include "defaults.h"
 #include <json-c/json.h>
 #include <wordexp.h>
 
@@ -55,11 +56,12 @@ int load_config(config_t *config) {
     // Set defaults
     strcpy(config->llm.provider, "openai");
     strcpy(config->llm.api_key, "");
-    strcpy(config->llm.model, "gpt-3.5-turbo");
-    strcpy(config->llm.endpoint, "https://api.openai.com/v1/chat/completions");
+    strcpy(config->llm.model, "gpt-4.1-nano");
+    strcpy(config->llm.endpoint, DEFAULT_OPENAI_ENDPOINT);
     strcpy(config->trigger_key, "ctrl+o");
     config->trigger_key_value = parse_keybinding("ctrl+o");
     config->enable_proxy_mode = 1;
+    config->show_startup_messages = 1;
 
     char *config_path = expand_path(CONFIG_FILE_PATH);
     FILE *fp = fopen(config_path, "r");
@@ -96,11 +98,11 @@ int load_config(config_t *config) {
     if (json_object_object_get_ex(root, "llm", &llm_obj)) {
         json_object *provider_obj;
         if (json_object_object_get_ex(llm_obj, "provider", &provider_obj)) {
-            strncpy(selected_provider, json_object_get_string(provider_obj),
-                   sizeof(selected_provider) - 1);
+            snprintf(selected_provider, sizeof(selected_provider), "%s",
+                     json_object_get_string(provider_obj));
         }
     }
-    strncpy(config->llm.provider, selected_provider, sizeof(config->llm.provider) - 1);
+    snprintf(config->llm.provider, sizeof(config->llm.provider), "%s", selected_provider);
 
     // Load default configuration from providers section
     json_object *providers_obj;
@@ -110,14 +112,14 @@ int load_config(config_t *config) {
             // Load default model
             json_object *model_obj;
             if (json_object_object_get_ex(provider_config, "model", &model_obj)) {
-                strncpy(config->llm.model, json_object_get_string(model_obj),
-                       sizeof(config->llm.model) - 1);
+                snprintf(config->llm.model, sizeof(config->llm.model), "%s",
+                         json_object_get_string(model_obj));
             }
             // Load default endpoint
             json_object *endpoint_obj;
             if (json_object_object_get_ex(provider_config, "endpoint", &endpoint_obj)) {
-                strncpy(config->llm.endpoint, json_object_get_string(endpoint_obj),
-                       sizeof(config->llm.endpoint) - 1);
+                snprintf(config->llm.endpoint, sizeof(config->llm.endpoint), "%s",
+                         json_object_get_string(endpoint_obj));
             }
         }
     }
@@ -126,20 +128,20 @@ int load_config(config_t *config) {
     if (json_object_object_get_ex(root, "llm", &llm_obj)) {
         json_object *model_obj;
         if (json_object_object_get_ex(llm_obj, "model", &model_obj)) {
-            strncpy(config->llm.model, json_object_get_string(model_obj),
-                   sizeof(config->llm.model) - 1);
+            snprintf(config->llm.model, sizeof(config->llm.model), "%s",
+                     json_object_get_string(model_obj));
         }
 
         json_object *endpoint_obj;
         if (json_object_object_get_ex(llm_obj, "endpoint", &endpoint_obj)) {
-            strncpy(config->llm.endpoint, json_object_get_string(endpoint_obj),
-                   sizeof(config->llm.endpoint) - 1);
+            snprintf(config->llm.endpoint, sizeof(config->llm.endpoint), "%s",
+                     json_object_get_string(endpoint_obj));
         }
 
         json_object *api_key_obj;
         if (json_object_object_get_ex(llm_obj, "api_key", &api_key_obj)) {
-            strncpy(config->llm.api_key, json_object_get_string(api_key_obj),
-                   sizeof(config->llm.api_key) - 1);
+            snprintf(config->llm.api_key, sizeof(config->llm.api_key), "%s",
+                     json_object_get_string(api_key_obj));
         }
     }
 
@@ -154,14 +156,14 @@ int load_config(config_t *config) {
     }
 
     if (env_api_key && strlen(env_api_key) > 0) {
-        strncpy(config->llm.api_key, env_api_key, sizeof(config->llm.api_key) - 1);
+        snprintf(config->llm.api_key, sizeof(config->llm.api_key), "%s", env_api_key);
     }
 
     // Parse trigger key
     json_object *trigger_obj;
     if (json_object_object_get_ex(root, "trigger_key", &trigger_obj)) {
         const char *trigger_str = json_object_get_string(trigger_obj);
-        strncpy(config->trigger_key, trigger_str, sizeof(config->trigger_key) - 1);
+        snprintf(config->trigger_key, sizeof(config->trigger_key), "%s", trigger_str);
         config->trigger_key_value = parse_keybinding(trigger_str);
     }
 
@@ -171,6 +173,53 @@ int load_config(config_t *config) {
         config->enable_proxy_mode = json_object_get_boolean(proxy_obj);
     }
 
+    // Parse startup messages setting
+    json_object *startup_obj;
+    if (json_object_object_get_ex(root, "show_startup_messages", &startup_obj)) {
+        config->show_startup_messages = json_object_get_boolean(startup_obj);
+    }
+
     json_object_put(root);
     return 0;
 }
+
+char* get_default_bin_path(const char* binary_name) {
+    if (!binary_name) return NULL;
+
+    const char* home = getenv("HOME");
+    if (!home) home = "/tmp";
+
+    char* path = malloc(strlen(home) + strlen("/.local/bin/") + strlen(binary_name) + 1);
+    if (!path) return NULL;
+
+    sprintf(path, "%s/.local/bin/%s", home, binary_name);
+    return path;
+}
+
+char* get_config_file_path(void) {
+    const char* home = getenv("HOME");
+    if (!home) home = "/tmp";
+
+    char* path = malloc(strlen(home) + strlen("/.config/smart-cmd/config.json") + 1);
+    if (!path) return NULL;
+
+    sprintf(path, "%s/.config/smart-cmd/config.json", home);
+    return path;
+}
+
+char* get_temp_file_path(const char* prefix) {
+    const char* tmp_dir = getenv("TMPDIR");
+    if (!tmp_dir) tmp_dir = "/tmp";
+
+    char session_id[32];
+    if (generate_session_id(session_id, sizeof(session_id)) == -1) {
+        return NULL;
+    }
+
+    char* path = malloc(strlen(tmp_dir) + strlen("/smart-cmd.") + strlen(prefix) + strlen(session_id) + 3);
+    if (!path) return NULL;
+
+    sprintf(path, "%s/smart-cmd.%s.%s", tmp_dir, prefix, session_id);
+    return path;
+}
+

@@ -36,22 +36,29 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, response
 }
 
 static void build_system_prompt(char *buffer, size_t buffer_size, const prompt_context_t *ctx) {
-    snprintf(buffer, buffer_size,
-        "You are an intelligent command-line assistant. Based on the current shell context, "
-        "provide appropriate command completions or suggestions.\n\n"
-        "Current context:\n"
-        "User: %s\n"
-        "Host: %s\n"
-        "Directory: %s\n"
-        "Last command: %s\n"
-        "Terminal output: %s\n\n"
-        "Rules:\n"
-        "- If you can complete the current partial command, start your response with '+' followed by the completion\n"
-        "- If you suggest a completely different command, start your response with '=' followed by the command\n"
-        "- Be concise and practical\n"
-        "- Consider the current directory and git state if applicable\n"
-        "- Provide only one command suggestion",
-        ctx->username, ctx->hostname, ctx->cwd, ctx->last_command, ctx->terminal_buffer);
+    int ret = snprintf(buffer, buffer_size,
+                       "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
+                       "CONTEXT:\n"
+                       "User: %s@%s\n"
+                       "Directory: %s\n",
+                       ctx->username ? ctx->username : "unknown",
+                       ctx->hostname ? ctx->hostname : "unknown",
+                       ctx->cwd ? ctx->cwd : "unknown");
+
+    if (ret > 0 && (size_t)ret < buffer_size && ctx->terminal_buffer && strlen(ctx->terminal_buffer) > 0) {
+        size_t remaining = buffer_size - ret;
+        ret += snprintf(buffer + ret, remaining, "Command History:\n%s\n", ctx->terminal_buffer);
+    }
+
+    if (ret > 0 && (size_t)ret < buffer_size) {
+        size_t remaining = buffer_size - ret;
+        snprintf(buffer + ret, remaining,
+                 "\nRULES:\n"
+                 "1. Your response must be a single command-line suggestion.\n"
+                 "2. If you are completing the user's partial command, your response MUST start with '+' followed by the ENTIRE completed command. Example: If the user input is 'git commi', your response should be '+git commit'.\n"
+                 "3. If you are suggesting a new command (not a completion of partial input), your response MUST start with '='. Example: '=git status'.\n"
+                 "4. Do NOT add any explanation. Your entire output must be just the prefix ('+' or '=') and the command.\n");
+    }
 }
 
 typedef struct {
@@ -67,18 +74,18 @@ typedef struct {
 static void add_json_fields(json_object *obj, const json_field_t *fields, int count) {
     for (int i = 0; i < count; i++) {
         switch (fields[i].type) {
-            case JSON_STR:
-                json_object_object_add(obj, fields[i].key,
-                    json_object_new_string(fields[i].str_val));
-                break;
-            case JSON_DBL:
-                json_object_object_add(obj, fields[i].key,
-                    json_object_new_double(fields[i].dbl_val));
-                break;
-            case JSON_INT:
-                json_object_object_add(obj, fields[i].key,
-                    json_object_new_int(fields[i].int_val));
-                break;
+        case JSON_STR:
+            json_object_object_add(obj, fields[i].key,
+                                   json_object_new_string(fields[i].str_val));
+            break;
+        case JSON_DBL:
+            json_object_object_add(obj, fields[i].key,
+                                   json_object_new_double(fields[i].dbl_val));
+            break;
+        case JSON_INT:
+            json_object_object_add(obj, fields[i].key,
+                                   json_object_new_int(fields[i].int_val));
+            break;
         }
     }
 }
@@ -215,7 +222,7 @@ static int parse_llm_response(const char *response_json, suggestion_t *suggestio
     if (response_text && strlen(response_text) > 0) {
         suggestion->type = response_text[0];
         strncpy(suggestion->suggestion, response_text + 1,
-               sizeof(suggestion->suggestion) - 1);
+                sizeof(suggestion->suggestion) - 1);
         suggestion->suggestion[strcspn(suggestion->suggestion, "\n")] = 0;
         suggestion->visible = 1;
         json_object_put(root);
@@ -228,7 +235,7 @@ static int parse_llm_response(const char *response_json, suggestion_t *suggestio
 
 
 static int send_http_request(const char *url, const char *api_key, json_object *request_json,
-                            response_buffer_t *response, const char *provider) {
+                             response_buffer_t *response, const char *provider) {
     CURL *curl = curl_easy_init();
     if (!curl) return -1;
 
@@ -252,7 +259,7 @@ static int send_http_request(const char *url, const char *api_key, json_object *
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_string);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
 
@@ -289,7 +296,7 @@ int send_to_llm(const char *input, const context_t *ctx, const config_t *config,
     char full_endpoint[512];
     if (strcmp(config->llm.provider, "gemini") == 0) {
         snprintf(full_endpoint, sizeof(full_endpoint), "%s%s:generateContent",
-                config->llm.endpoint, config->llm.model);
+                 config->llm.endpoint, config->llm.model);
     } else {
         strncpy(full_endpoint, config->llm.endpoint, sizeof(full_endpoint) - 1);
     }

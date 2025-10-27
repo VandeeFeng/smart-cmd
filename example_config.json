@@ -6,6 +6,7 @@
   },
   "trigger_key": "ctrl+o",
   "enable_proxy_mode": true,
+  "show_startup_messages": true,
   "providers": {
     "openai": {
       "endpoint": "https://api.openai.com/v1/chat/completions",

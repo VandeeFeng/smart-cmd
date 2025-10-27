@@ -2,6 +2,8 @@
 #include "smart_cmd.h"
 #include <getopt.h>
 
+#ifdef COMPLETION_BINARY
+
 typedef struct {
     char input[MAX_INPUT_LEN];
     char cwd[512];
@@ -11,7 +13,7 @@ typedef struct {
     int git_dirty;
 } completion_context_t;
 
-static void print_usage(const char *program_name) {
+static void print_completion_usage(const char *program_name) {
     printf("Usage: %s [OPTIONS]\n", program_name);
     printf("Smart Command Completion Backend\n\n");
     printf("Options:\n");
@@ -21,7 +23,7 @@ static void print_usage(const char *program_name) {
     printf("  -v, --version        Show version information\n");
 }
 
-static void print_version() {
+static void print_completion_version() {
     printf("smart-cmd-completion %s\n", VERSION);
 }
 
@@ -155,10 +157,10 @@ int main(int argc, char *argv[]) {
             strncpy(context_json, optarg, sizeof(context_json) - 1);
             break;
         case 'h':
-            print_usage(argv[0]);
+            print_completion_usage(argv[0]);
             return 0;
         case 'v':
-            print_version();
+            print_completion_version();
             return 0;
         case '?':
             fprintf(stderr, "Unknown option. Use -h for help.\n");
@@ -205,6 +207,112 @@ int main(int argc, char *argv[]) {
         print_suggestions_json(suggestions, suggestion_count);
     } else {
         printf("{\"suggestions\":[]}\n");
+    }
+
+    return 0;
+}
+
+#endif // COMPLETION_BINARY
+
+// Functions for main binary
+#include <json-c/json.h>
+
+int parse_completion_context(const char *context_json, context_t *ctx) {
+    if (!context_json || !ctx) return -1;
+
+    json_object *root = json_tokener_parse(context_json);
+    if (!root) return -1;
+
+    json_object *cwd, *user, *host;
+    if (json_object_object_get_ex(root, "cwd", &cwd)) {
+        strncpy(ctx->cwd, json_object_get_string(cwd), sizeof(ctx->cwd) - 1);
+    }
+    if (json_object_object_get_ex(root, "user", &user)) {
+        strncpy(ctx->username, json_object_get_string(user), sizeof(ctx->username) - 1);
+    }
+    if (json_object_object_get_ex(root, "host", &host)) {
+        strncpy(ctx->hostname, json_object_get_string(host), sizeof(ctx->hostname) - 1);
+    }
+
+    json_object_put(root);
+    return 0;
+}
+
+int format_completion_output(const suggestion_t *suggestion, char **json_output) {
+    if (!suggestion || !json_output) return -1;
+
+    json_object *out_root = json_object_new_object();
+    json_object *suggestions_arr = json_object_new_array();
+    char full_suggestion[MAX_SUGGESTION_LEN + 2];
+    snprintf(full_suggestion, sizeof(full_suggestion), "%c%s", suggestion->type, suggestion->suggestion);
+    json_object_array_add(suggestions_arr, json_object_new_string(full_suggestion));
+    json_object_object_add(out_root, "suggestions", suggestions_arr);
+
+    const char *json_str = json_object_to_json_string(out_root);
+    *json_output = strdup(json_str);
+
+    json_object_put(out_root);
+    return *json_output ? 0 : -1;
+}
+
+int run_basic_tests() {
+    printf("Running basic functionality tests...\n");
+
+    config_t config;
+    printf("  Testing config loading... ");
+    if (load_config(&config) == 0) {
+        printf("OK\n");
+    } else {
+        printf("FAILED (no config found, using defaults)\n");
+    }
+
+    printf("  Testing context collection... ");
+    context_t ctx;
+    if (collect_context(&ctx) == 0) {
+        printf("OK\n");
+        printf("    Current directory: %s\n", ctx.cwd);
+        printf("    User: %s\n", ctx.username);
+        printf("    Host: %s\n", ctx.hostname);
+    } else {
+        printf("FAILED\n");
+    }
+
+    printf("Basic tests completed.\n");
+    return 0;
+}
+
+int run_completion_mode(const char *input, const char *context_json) {
+    if (!input) return -1;
+
+    config_t config;
+    load_config(&config);
+
+    context_t ctx = {0};
+    if (context_json) {
+        if (parse_completion_context(context_json, &ctx) != 0) {
+            fprintf(stderr, "error:Failed to parse context JSON.\n");
+            return 1;
+        }
+    } else {
+        if (collect_context(&ctx) != 0) {
+            fprintf(stderr, "error:Failed to collect context.\n");
+            return 1;
+        }
+    }
+
+    suggestion_t suggestion;
+    if (send_to_llm(input, &ctx, &config, &suggestion) == 0) {
+        char *json_output;
+        if (format_completion_output(&suggestion, &json_output) == 0) {
+            printf("%s\n", json_output);
+            free(json_output);
+        } else {
+            fprintf(stderr, "error:Failed to format output.\n");
+            return 1;
+        }
+    } else {
+        fprintf(stderr, "error:Failed to get LLM suggestion.\n");
+        return 1;
     }
 
     return 0;

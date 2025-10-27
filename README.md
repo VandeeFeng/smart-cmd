@@ -20,6 +20,20 @@ cd smart-cmd
 
 # Reload your shell configuration
 source ~/.bashrc
+
+# Verify installation (optional)
+smart-cmd --help
+smart-cmd-mode
+```
+
+- **install.sh**: Automated installation script that builds and installs all components
+- **uninstall.sh**: Clean removal script that safely uninstalls all components
+
+**Important**: Make sure `~/.local/bin` is in your PATH. If commands are not found, add this to your `~/.bashrc`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+source ~/.bashrc
 ```
 
 ### Manual Installation
@@ -31,7 +45,9 @@ If you prefer manual installation:
 make clean && make
 
 # Install binaries
+cp smart-cmd ~/.local/bin/
 cp smart-cmd-completion ~/.local/bin/
+cp smart-cmd-daemon ~/.local/bin/
 cp smart-cmd.bash ~/.local/bin/
 
 # Create config directory and install configuration
@@ -39,7 +55,9 @@ mkdir -p ~/.config/smart-cmd/
 cp example_config.json ~/.config/smart-cmd/config.json
 
 # Set executable permissions
+chmod +x ~/.local/bin/smart-cmd
 chmod +x ~/.local/bin/smart-cmd-completion
+chmod +x ~/.local/bin/smart-cmd-daemon
 chmod +x ~/.local/bin/smart-cmd.bash
 
 # Add to bashrc (if not automatically added)
@@ -54,6 +72,82 @@ source ~/.bashrc
 1. **Trigger AI Completion**: Press `Ctrl+O` to send your current command to the LLM API
 2. **Accept Suggestion**: Press `→` (right arrow) to confirm and fill the LLM's completion suggestion
 3. **Cancel**: Press `Esc` or continue typing normally to ignore suggestions
+
+### Working Modes
+
+Smart-cmd supports two modes controlled by `enable_proxy_mode` in the configuration:
+
+#### Basic Mode (`enable_proxy_mode: false`)
+- **Direct AI completion** without persistent context
+- **Fast response time** with minimal overhead
+- **Environment context** (cwd, git status, user info)
+- **No command history** - each request is independent
+
+#### Daemon Mode (`enable_proxy_mode: true`)
+- **Command history** - remembers last 50 commands (1 hour window)
+- **Context-aware suggestions** - AI learns from your recent commands
+- **Session persistence** - history survives shell restarts
+- **Secure isolation** - daemon runs in isolated environment for privacy
+
+**Security Features:**
+- Command history stored in temporary files (`/tmp/smart-cmd.history.{session}`)
+- Commands older than 1 hour are automatically deleted
+- Only last 3 commands are sent to AI for context
+- Completely isolated from your bash history
+
+**Communication:** Daemon communicates through Unix Domain Sockets (`/tmp/smart-cmd.socket.{session_id}`) for secure IPC.
+
+### Daemon Management
+
+When using daemon mode, you have additional commands (available globally):
+
+```bash
+# Check daemon status and current mode
+smart-cmd-status
+
+# View detailed configuration and mode information
+smart-cmd-mode
+
+# Manually start daemon (if not auto-starting)
+smart-cmd-start
+
+# Stop daemon
+smart-cmd-stop
+
+# Toggle smart completion on/off
+smart-cmd-toggle
+
+# View version information
+smart-cmd --version
+
+# Show help and all available commands
+smart-cmd --help
+
+# Test basic functionality
+smart-cmd --test
+
+# Show current configuration
+smart-cmd --config
+```
+
+### Configuration Mode Switching
+
+To switch between modes:
+
+```bash
+# Edit configuration
+vim ~/.config/smart-cmd/config.json
+
+# Change enable_proxy_mode setting
+{
+  "llm": { ... },
+  "trigger_key": "ctrl+o",
+  "enable_proxy_mode": true  // true for daemon, false for basic
+}
+
+# Reload shell configuration
+source ~/.bashrc
+```
 
 ### Custom Keyboard Shortcuts
 
@@ -115,49 +209,65 @@ The configuration file structure:
   }
 }
 ```
-## install.sh Script Details
 
-The installation script performs these core operations:
-
-### 1. Build Process
-```bash
-# Clean previous builds
-make clean
-
-# Compile the C binary
-gcc -O2 -std=c99 -Wall -Wextra \
-    src/main.c src/completion.c src/config.c \
-    src/llm_client.c src/context_collector.c \
-    src/ui_renderer.c src/keyboard.c \
-    -o smart-cmd-completion \
-    -lcurl -ljson-c
-```
-
-### 2. File Installation
-- **Binary Installation**: Copies `smart-cmd-completion` to `~/.local/bin/`
-- **Script Installation**: Copies `smart-cmd.bash` to `~/.local/bin/`
-- **Configuration Setup**: Creates `~/.config/smart-cmd/` directory
-- **Config File**: Installs `example_config.json` as `config.json`
-
-### 3. Permission and Path Setup
-- **Executable Permissions**: Sets `+x` on both installed files
-- **Bash Integration**: Adds `source ~/.local/bin/smart-cmd.bash` to `~/.bashrc`
+**Configuration Options:**
+- **`enable_proxy_mode`**: `true` for daemon mode, `false` for basic mode
+- **`trigger_key`**: Keyboard shortcut (default: "ctrl+o")
+- **`llm.provider`**: LLM provider (openai, gemini, openrouter)
+- **`llm.model`**: Model name to use
+- **`llm.endpoint`**: API endpoint URL
 
 ## Troubleshooting
 
 ### Common Issues
 
-**"Command not found: smart-cmd-completion"**
+**"Command not found: smart-cmd" or "smart-cmd-completion"**
 ```bash
-# Ensure ~/.local/bin is in your PATH
+# Check if ~/.local/bin is in your PATH
 echo $PATH | grep -q "$HOME/.local/bin" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
+
+# Verify installation
+which smart-cmd
+which smart-cmd-completion
+which smart-cmd-daemon
 ```
 
 **"Permission denied" errors**
 ```bash
-# Fix permissions
+# Fix permissions for all smart-cmd components
+chmod +x ~/.local/bin/smart-cmd
 chmod +x ~/.local/bin/smart-cmd-completion
+chmod +x ~/.local/bin/smart-cmd-daemon
 chmod +x ~/.local/bin/smart-cmd.bash
 ```
+
+## Installation Scripts
+
+### install.sh
+
+The `install.sh` script automates the entire setup process:
+
+- **Build Project**: Automatically runs `make clean && make` if binaries don't exist
+- **Install Components**: Copies all necessary files to `~/.local/bin/`:
+  - `smart-cmd`: Main utility program
+  - `smart-cmd-completion`: Fallback completion backend
+  - `smart-cmd-daemon`: Daemon with PTY support
+  - `smart-cmd.bash`: Bash integration script
+- **Set Permissions**: Adds executable permissions to all files
+- **Configuration**: Creates `~/.config/smart-cmd/` directory and installs config file
+- **Shell Integration**: Automatically adds smart-cmd integration to `~/.bashrc`
+- **System Service**: Optionally installs systemd user service for auto-starting daemon
+
+### uninstall.sh
+
+The `uninstall.sh` script safely removes all installed components:
+
+- **Stop Daemon**: Safely stops any running smart-cmd-daemon
+- **Remove Service**: Deletes systemd user service (if installed)
+- **Delete Files**: Removes all smart-cmd components from `~/.local/bin/`
+- **Clean Configuration**: Removes smart-cmd integration from `~/.bashrc` (creates backup)
+- **Temp Files**: Cleans up daemon temporary files in `/tmp/`
+- **Config Directory**: Optionally removes `~/.config/smart-cmd/` configuration directory
+- **Process Cleanup**: Checks and cleans up any remaining smart-cmd processes
 
