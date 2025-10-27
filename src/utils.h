@@ -26,6 +26,7 @@ int generate_session_id(char *session_id, size_t len);
 void setup_signal_handlers(void (*handler)(int));
 
 // Path generation utilities
+int generate_session_paths(void *paths, const char *session_id);
 int generate_lock_path(char *path, size_t size, const char *session_id);
 int generate_socket_path(char *path, size_t size, const char *session_id);
 int generate_log_path(char *path, size_t size, const char *session_id);

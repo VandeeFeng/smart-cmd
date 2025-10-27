@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "utils.h"
+#include "smart_cmd.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -55,6 +56,31 @@ int generate_lock_path(char *path, size_t size, const char *session_id) {
 
     const char *tmpdir = get_smart_cmd_tmpdir();
     snprintf(path, size, "%s/%s.%s", tmpdir, LOCK_FILE_PREFIX, session_id);
+    return 0;
+}
+
+int generate_session_paths(void *paths, const char *session_id) {
+    RETURN_IF_NULL(paths, -1);
+    RETURN_IF_NULL(session_id, -1);
+
+    // Cast to the actual structure type
+    session_paths_t *session_paths = (session_paths_t*)paths;
+
+    if (generate_socket_path(session_paths->socket_path, sizeof(session_paths->socket_path), session_id) == -1) {
+        return -1;
+    }
+
+    if (generate_lock_path(session_paths->lock_file, sizeof(session_paths->lock_file), session_id) == -1) {
+        return -1;
+    }
+
+    if (generate_log_path(session_paths->log_file, sizeof(session_paths->log_file), session_id) == -1) {
+        return -1;
+    }
+
+    strncpy(session_paths->session_id, session_id, sizeof(session_paths->session_id) - 1);
+    session_paths->session_id[sizeof(session_paths->session_id) - 1] = '\0';
+
     return 0;
 }
 

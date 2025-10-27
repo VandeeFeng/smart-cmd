@@ -2,6 +2,7 @@
 #include "smart_cmd.h"
 #include <curl/curl.h>
 #include <json-c/json.h>
+#include <stdarg.h>
 
 typedef struct {
     char *data;
@@ -9,10 +10,79 @@ typedef struct {
 } response_buffer_t;
 
 typedef struct {
+    char *buffer;
+    size_t size;
+    size_t capacity;
+    size_t pos;
+} dynamic_buffer_t;
+
+static dynamic_buffer_t dynamic_buffer_create(size_t initial_capacity) {
+    char *buffer = malloc(initial_capacity);
+    return (dynamic_buffer_t){buffer, initial_capacity, initial_capacity, 0};
+}
+
+static void dynamic_buffer_destroy(dynamic_buffer_t *buf) {
+    if (buf->buffer) {
+        free(buf->buffer);
+        buf->buffer = NULL;
+        buf->size = buf->capacity = buf->pos = 0;
+    }
+}
+
+static int dynamic_buffer_append(dynamic_buffer_t *buf, const char *format, ...) {
+    if (!buf || !buf->buffer) return -1;
+
+    va_list args;
+    va_start(args, format);
+
+    size_t available = buf->capacity - buf->pos - 1;
+    int written = vsnprintf(buf->buffer + buf->pos, available, format, args);
+
+    if (written > 0 && (size_t)written >= available) {
+        size_t new_capacity = buf->capacity * 2;
+        char *new_buffer = realloc(buf->buffer, new_capacity);
+        if (!new_buffer) {
+            va_end(args);
+            return -1;
+        }
+
+        buf->buffer = new_buffer;
+        buf->capacity = new_capacity;
+        available = buf->capacity - buf->pos - 1;
+
+        va_end(args);
+        va_start(args, format);
+        written = vsnprintf(buf->buffer + buf->pos, available, format, args);
+    }
+
+    if (written > 0) {
+        buf->pos += written;
+        buf->buffer[buf->pos] = '\0';
+    }
+
+    va_end(args);
+    return written;
+}
+
+typedef struct {
     double temperature;
     int max_tokens;
     const char *model;
+    const char *provider;
+    const char *api_key;
+    const char *endpoint;
 } llm_request_params_t;
+
+static llm_request_params_t create_llm_params_from_config(const config_t *config) {
+    return (llm_request_params_t){
+        .temperature = 0.7,
+        .max_tokens = 100,
+        .model = config->llm.model,
+        .provider = config->llm.provider,
+        .api_key = config->llm.api_key,
+        .endpoint = config->llm.endpoint
+    };
+}
 
 typedef struct {
     const char *last_command;
@@ -33,24 +103,26 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, response
 }
 
 static void build_system_prompt(char *buffer, size_t buffer_size, const prompt_context_t *ctx) {
-    int ret = snprintf(buffer, buffer_size,
-                       "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
-                       "CONTEXT:\n");
+    dynamic_buffer_t buf = dynamic_buffer_create(1024);
 
-    if (ret > 0 && (size_t)ret < buffer_size && ctx->terminal_buffer && strlen(ctx->terminal_buffer) > 0) {
-        size_t remaining = buffer_size - ret;
-        ret += snprintf(buffer + ret, remaining, "Command History:\n%s\n", ctx->terminal_buffer);
+    dynamic_buffer_append(&buf, "%s",
+        "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
+        "CONTEXT:\n");
+
+    if (ctx->terminal_buffer && strlen(ctx->terminal_buffer) > 0) {
+        dynamic_buffer_append(&buf, "Command History:\n%s\n", ctx->terminal_buffer);
     }
 
-    if (ret > 0 && (size_t)ret < buffer_size) {
-        size_t remaining = buffer_size - ret;
-        snprintf(buffer + ret, remaining,
-                 "\nRULES:\n"
-                 "1. Your response must be a single command-line suggestion.\n"
-                 "2. If you are completing the user's partial command, your response MUST start with '+' followed by the ENTIRE completed command. Example: If the user input is 'git commi', your response should be '+git commit'.\n"
-                 "3. If you are suggesting a new command (not a completion of partial input), your response MUST start with '='. Example: '=git status'.\n"
-                 "4. Do NOT add any explanation. Your entire output must be just the prefix ('+' or '=') and the command.\n");
-    }
+    dynamic_buffer_append(&buf, "%s",
+        "\nRULES:\n"
+        "1. Your response must be a single command-line suggestion.\n"
+        "2. If you are completing the user's partial command, your response MUST start with '+' followed by the ENTIRE completed command. Example: If the user input is 'git commi', your response should be '+git commit'.\n"
+        "3. If you are suggesting a new command (not a completion of partial input), your response MUST start with '='. Example: '=git status'.\n"
+        "4. Do NOT add any explanation. Your entire output must be just the prefix ('+' or '=') and the command.\n");
+
+    strncpy(buffer, buf.buffer, buffer_size - 1);
+    buffer[buffer_size - 1] = '\0';
+    dynamic_buffer_destroy(&buf);
 }
 
 typedef struct {
@@ -63,33 +135,44 @@ typedef struct {
     enum { JSON_STR, JSON_DBL, JSON_INT } type;
 } json_field_t;
 
-static void add_json_fields(json_object *obj, const json_field_t *fields, int count) {
-    for (int i = 0; i < count; i++) {
-        switch (fields[i].type) {
-        case JSON_STR:
-            json_object_object_add(obj, fields[i].key,
-                                   json_object_new_string(fields[i].str_val));
-            break;
-        case JSON_DBL:
-            json_object_object_add(obj, fields[i].key,
-                                   json_object_new_double(fields[i].dbl_val));
-            break;
-        case JSON_INT:
-            json_object_object_add(obj, fields[i].key,
-                                   json_object_new_int(fields[i].int_val));
-            break;
-        }
-    }
+typedef struct {
+    json_object *obj;
+    int field_count;
+} json_builder_t;
+
+static json_builder_t json_builder_create() {
+    return (json_builder_t){json_object_new_object(), 0};
 }
 
+static void json_builder_add_field(json_builder_t *builder, const char *key, const char *value) {
+    json_object_object_add(builder->obj, key, json_object_new_string(value));
+    builder->field_count++;
+}
+
+static void json_builder_add_double(json_builder_t *builder, const char *key, double value) {
+    json_object_object_add(builder->obj, key, json_object_new_double(value));
+    builder->field_count++;
+}
+
+
+static void json_object_add_field(json_object *obj, const char *key, const char *value) {
+    json_object_object_add(obj, key, json_object_new_string(value));
+}
+
+static void json_object_add_double(json_object *obj, const char *key, double value) {
+    json_object_object_add(obj, key, json_object_new_double(value));
+}
+
+static void json_object_add_int(json_object *obj, const char *key, int value) {
+    json_object_object_add(obj, key, json_object_new_int(value));
+}
+
+
 static json_object *create_json_message(const char *role, const char *content) {
-    json_object *msg = json_object_new_object();
-    const json_field_t msg_fields[] = {
-        {"role", .str_val = role, JSON_STR},
-        {"content", .str_val = content, JSON_STR}
-    };
-    add_json_fields(msg, msg_fields, 2);
-    return msg;
+    json_builder_t builder = json_builder_create();
+    json_builder_add_field(&builder, "role", role);
+    json_builder_add_field(&builder, "content", content);
+    return builder.obj;
 }
 
 static json_object *create_gemini_request(const char *input, const char *system_prompt, const llm_request_params_t *params) {
@@ -98,26 +181,21 @@ static json_object *create_gemini_request(const char *input, const char *system_
     json_object *content = json_object_new_object();
     json_object *parts = json_object_new_array();
 
-    char full_prompt[8192];
-    snprintf(full_prompt, sizeof(full_prompt), "%s\n\nUser input: %s", system_prompt, input);
+    dynamic_buffer_t prompt_buf = dynamic_buffer_create(1024);
+    dynamic_buffer_append(&prompt_buf, "%s\n\nUser input: %s", system_prompt, input);
 
-    json_object *part = json_object_new_object();
-    const json_field_t part_fields[] = {
-        {"text", .str_val = full_prompt, JSON_STR}
-    };
-    add_json_fields(part, part_fields, 1);
-    json_object_array_add(parts, part);
+    json_builder_t part_builder = json_builder_create();
+    json_builder_add_field(&part_builder, "text", prompt_buf.buffer);
+    dynamic_buffer_destroy(&prompt_buf);
+    json_object_array_add(parts, part_builder.obj);
 
     json_object_object_add(content, "parts", parts);
     json_object_array_add(contents, content);
     json_object_object_add(request, "contents", contents);
 
-    json_object *generation_config = json_object_new_object();
-    const json_field_t config_fields[] = {
-        {"temperature", .dbl_val = params->temperature, JSON_DBL}
-    };
-    add_json_fields(generation_config, config_fields, 1);
-    json_object_object_add(request, "generationConfig", generation_config);
+    json_builder_t config_builder = json_builder_create();
+    json_builder_add_double(&config_builder, "temperature", params->temperature);
+    json_object_object_add(request, "generationConfig", config_builder.obj);
 
     return request;
 }
@@ -131,12 +209,9 @@ static json_object *create_openai_request(const char *input, const char *system_
 
     json_object_object_add(request, "messages", messages);
 
-    const json_field_t request_fields[] = {
-        {"model", .str_val = params->model, JSON_STR},
-        {"temperature", .dbl_val = params->temperature, JSON_DBL},
-        {"max_tokens", .int_val = params->max_tokens, JSON_INT}
-    };
-    add_json_fields(request, request_fields, 3);
+    json_object_add_field(request, "model", params->model);
+    json_object_add_double(request, "temperature", params->temperature);
+    json_object_add_int(request, "max_tokens", params->max_tokens);
 
     return request;
 }
@@ -147,16 +222,12 @@ static json_object* create_llm_request(const char *input, const session_context_
         .terminal_buffer = ctx->terminal_buffer
     };
 
-    llm_request_params_t params = {
-        .temperature = 0.7,
-        .max_tokens = 100,
-        .model = config->llm.model
-    };
+    llm_request_params_t params = create_llm_params_from_config(config);
 
     char system_prompt[4096];
     build_system_prompt(system_prompt, sizeof(system_prompt), &prompt_ctx);
 
-    if (strcmp(config->llm.provider, "gemini") == 0) {
+    if (strcmp(params.provider, "gemini") == 0) {
         return create_gemini_request(input, system_prompt, &params);
     } else {
         return create_openai_request(input, system_prompt, &params);
