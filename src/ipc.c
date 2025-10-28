@@ -123,7 +123,7 @@ int accept_ipc_connection(int server_fd) {
     if (getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) == 0) {
         // Verify that the peer is running as the same user
         if (cred.uid != getuid()) {
-            fprintf(stderr, "Rejecting connection from different user (UID: %d)\n", cred.uid);
+            fprintf(stderr, "ERROR: accept_client_connection: Rejecting connection from different user (UID: %d)\n", cred.uid);
             close(client_fd);
             return -1;
         }
@@ -143,14 +143,15 @@ int accept_ipc_connection(int server_fd) {
 int send_ipc_message(int fd, const char *message) {
     if (fd == -1 || !message) return -1;
 
-    if (validate_ipc_message(message) == -1) {
-        fprintf(stderr, "Invalid IPC message rejected\n");
+    int err;
+    if ((err = validate_ipc_message(message)) != 0) {
+        fprintf(stderr, "ERROR: send_ipc_message: Invalid IPC message rejected\n");
         return -1;
     }
 
     size_t msg_len = strlen(message);
     if (msg_len > MAX_IPC_MESSAGE_SIZE - sizeof(ipc_header_t)) {
-        fprintf(stderr, "Message too long\n");
+        fprintf(stderr, "ERROR: send_ipc_message: Message too long\n");
         return -1;
     }
 
@@ -198,17 +199,17 @@ int receive_ipc_message(int fd, char *buffer, size_t buffer_size) {
 
     // Validate header
     if (header.magic != IPC_MAGIC || header.version != IPC_VERSION) {
-        fprintf(stderr, "Invalid IPC header\n");
+        fprintf(stderr, "ERROR: receive_ipc_message: Invalid IPC header\n");
         return -1;
     }
 
     if (header.length > MAX_IPC_MESSAGE_SIZE - sizeof(ipc_header_t)) {
-        fprintf(stderr, "Message too long: %u bytes\n", header.length);
+        fprintf(stderr, "ERROR: receive_ipc_message: Message too long: %u bytes\n", header.length);
         return -1;
     }
 
     if (header.length > buffer_size - 1) {
-        fprintf(stderr, "Buffer too small for message\n");
+        fprintf(stderr, "ERROR: receive_ipc_message: Buffer too small for message\n");
         return -1;
     }
 
@@ -225,8 +226,9 @@ int receive_ipc_message(int fd, char *buffer, size_t buffer_size) {
     buffer[received] = '\0';
 
     // Validate received message
-    if (validate_ipc_message(buffer) == -1) {
-        fprintf(stderr, "Received invalid IPC message\n");
+    int err;
+    if ((err = validate_ipc_message(buffer)) != 0) {
+        fprintf(stderr, "ERROR: receive_ipc_message: Received invalid IPC message\n");
         return -1;
     }
 

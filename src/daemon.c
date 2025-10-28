@@ -85,26 +85,26 @@ int cleanup_daemon_lock(const char *lock_file) {
 int check_safe_environment() {
     // Check if already inside a daemon session
     if (getenv("SMART_CMD_DAEMON_ACTIVE")) {
-        fprintf(stderr, "Already inside a daemon session, preventing nesting\n");
+        fprintf(stderr, "ERROR: check_safe_environment: Already inside a daemon session, preventing nesting\n");
         return -1;
     }
 
     // Check if running in restricted environment
     if (getuid() != geteuid()) {
-        fprintf(stderr, "Running with setuid is not allowed\n");
+        fprintf(stderr, "ERROR: check_safe_environment: Running with setuid is not allowed\n");
         return -1;
     }
 
     // Check if in tmux or similar terminal multiplexer
     if (getenv("TMUX")) {
-        fprintf(stderr, "Warning: Running in tmux, PTY functionality may be limited\n");
+        fprintf(stderr, "Warning: check_safe_environment: Running in tmux, PTY functionality may be limited\n");
     }
 
     // Check resource limits
     struct rlimit rl;
     if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
         if (rl.rlim_cur < 256) {
-            fprintf(stderr, "Warning: Low file descriptor limit (%lu), may affect operation\n",
+            fprintf(stderr, "Warning: check_safe_environment: Low file descriptor limit (%lu), may affect operation\n",
                     (unsigned long)rl.rlim_cur);
         }
     }
@@ -121,30 +121,31 @@ int start_daemon_process(daemon_session_t *info) {
     }
 
     // Generate session ID
-    if (generate_session_id(info->paths.session_id, sizeof(info->paths.session_id)) == -1) {
-        fprintf(stderr, "Failed to generate session ID\n");
+    int err;
+    if ((err = generate_session_id(info->paths.session_id, sizeof(info->paths.session_id))) != 0) {
+        fprintf(stderr, "ERROR: start_daemon_process: generate_session_id failed\n");
         return -1;
     }
 
     // Setup paths using individual utility functions
-    if (generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path), info->paths.session_id) == -1) {
-        fprintf(stderr, "Failed to create socket path\n");
+    if ((err = generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path), info->paths.session_id)) != 0) {
+        fprintf(stderr, "ERROR: start_daemon_process: generate_socket_path failed\n");
         return -1;
     }
 
-    if (generate_lock_path(info->paths.lock_file, sizeof(info->paths.lock_file), info->paths.session_id) == -1) {
-        fprintf(stderr, "Failed to create lock file path\n");
+    if ((err = generate_lock_path(info->paths.lock_file, sizeof(info->paths.lock_file), info->paths.session_id)) != 0) {
+        fprintf(stderr, "ERROR: start_daemon_process: generate_lock_path failed\n");
         return -1;
     }
 
-    if (generate_log_path(info->paths.log_file, sizeof(info->paths.log_file), info->paths.session_id) == -1) {
-        fprintf(stderr, "Failed to create log file path\n");
+    if ((err = generate_log_path(info->paths.log_file, sizeof(info->paths.log_file), info->paths.session_id)) != 0) {
+        fprintf(stderr, "ERROR: start_daemon_process: generate_log_path failed\n");
         return -1;
     }
 
     // Create daemon lock
-    if (create_daemon_lock(info->paths.lock_file, getpid()) == -1) {
-        fprintf(stderr, "Failed to create daemon lock - another instance may be running\n");
+    if ((err = create_daemon_lock(info->paths.lock_file, getpid())) != 0) {
+        fprintf(stderr, "ERROR: start_daemon_process: create_daemon_lock failed - another instance may be running\n");
         return -1;
     }
 
@@ -216,7 +217,7 @@ int start_daemon_process(daemon_session_t *info) {
 
         // Check if daemon is still running
         if (kill(pid, 0) == -1) {
-            fprintf(stderr, "Daemon failed to start\n");
+            fprintf(stderr, "ERROR: start_daemon_process: Daemon failed to start\n");
             info->active = 0;
             cleanup_daemon_lock(info->paths.lock_file);
             return -1;

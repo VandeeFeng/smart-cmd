@@ -116,19 +116,20 @@ int cmd_status() {
 
 int cmd_start() {
     config_t config;
-    if (load_config(&config) != 0 || !config.enable_proxy_mode) {
-        fprintf(stderr, "Daemon mode is disabled in configuration\n");
+    int err;
+    if ((err = load_config(&config)) != 0 || !config.enable_proxy_mode) {
+        fprintf(stderr, "ERROR: cmd_start: Daemon mode is disabled in configuration\n");
         return 1;
     }
 
     char *daemon_bin = get_default_bin_path("smart-cmd-daemon");
     if (!daemon_bin) {
-        fprintf(stderr, "Failed to get daemon binary path\n");
+        fprintf(stderr, "ERROR: cmd_start: Failed to get daemon binary path\n");
         return 1;
     }
 
     if (access(daemon_bin, X_OK) != 0) {
-        fprintf(stderr, "Daemon binary not found or not executable: %s\n", daemon_bin);
+        fprintf(stderr, "ERROR: cmd_start: Daemon binary not found or not executable: %s\n", daemon_bin);
         free(daemon_bin);
         return 1;
     }
@@ -161,7 +162,7 @@ int cmd_start() {
                    MSG_DAEMON_STARTED, info.daemon_pid, info.paths.session_id);
             return 0;
         } else {
-            fprintf(stderr, "%s\n", MSG_DAEMON_START_FAILED);
+            fprintf(stderr, "ERROR: cmd_start: %s\n", MSG_DAEMON_START_FAILED);
             return 1;
         }
     }

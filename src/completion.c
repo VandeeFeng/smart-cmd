@@ -161,7 +161,7 @@ int main(int argc, char *argv[]) {
 
     // Read input from stdin
     if (isatty(STDIN_FILENO)) {
-        fprintf(stderr, "Error: Input must be provided via stdin\n");
+        fprintf(stderr, "ERROR: handle_completion_command: Input must be provided via stdin\n");
         return 1;
     }
 
@@ -284,14 +284,15 @@ int run_completion_mode(const char *input, const char *context_json) {
     load_config(&config);
 
     session_context_t ctx = {0};
+    int err;
     if (context_json) {
-        if (parse_completion_context(context_json, &ctx) != 0) {
-            fprintf(stderr, "error:Failed to parse context JSON.\n");
+        if ((err = parse_completion_context(context_json, &ctx)) != 0) {
+            fprintf(stderr, "ERROR: run_completion_mode: Failed to parse context JSON.\n");
             return 1;
         }
     } else {
-        if (collect_context(&ctx) != 0) {
-            fprintf(stderr, "error:Failed to collect context.\n");
+        if ((err = collect_context(&ctx)) != 0) {
+            fprintf(stderr, "ERROR: run_completion_mode: Failed to collect context.\n");
             return 1;
         }
     }
@@ -299,15 +300,15 @@ int run_completion_mode(const char *input, const char *context_json) {
     suggestion_t suggestion;
     if (send_to_llm(input, &ctx, &config, &suggestion) == 0) {
         char *json_output;
-        if (format_completion_output(&suggestion, &json_output) == 0) {
+        if ((err = format_completion_output(&suggestion, &json_output)) == 0) {
             printf("%s\n", json_output);
             free(json_output);
         } else {
-            fprintf(stderr, "error:Failed to format output.\n");
+            fprintf(stderr, "ERROR: run_completion_mode: Failed to format output.\n");
             return 1;
         }
     } else {
-        fprintf(stderr, "error:Failed to get LLM suggestion.\n");
+        fprintf(stderr, "ERROR: run_completion_mode: Failed to get LLM suggestion.\n");
         return 1;
     }
 

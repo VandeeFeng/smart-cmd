@@ -340,7 +340,7 @@ int send_to_llm(const char *input, const session_context_t *ctx, const config_t 
     if (!input || !ctx || !config || !suggestion) return -1;
 
     if (!is_provider_supported(config->llm.provider)) {
-        fprintf(stderr, "Unsupported LLM provider: %s\n", config->llm.provider);
+        fprintf(stderr, "ERROR: send_to_llm: Unsupported LLM provider: %s\n", config->llm.provider);
         return -1;
     }
 
@@ -360,7 +360,7 @@ int send_to_llm(const char *input, const session_context_t *ctx, const config_t 
     // Build provider request using new function
     provider_request_t *provider_request = build_llm_request(system_prompt, config, input);
     if (!provider_request) {
-        fprintf(stderr, "Failed to build provider request\n");
+        fprintf(stderr, "ERROR: send_to_llm: Failed to build provider request\n");
         return -1;
     }
 
@@ -381,7 +381,7 @@ int send_to_llm(const char *input, const session_context_t *ctx, const config_t 
     if (result == 0 && request.response_data) {
         result = parse_llm_response(request.response_data, suggestion, config->llm.provider);
     } else {
-        fprintf(stderr, "HTTP request failed or no response data\n");
+        fprintf(stderr, "ERROR: send_to_llm: HTTP request failed or no response data\n");
         result = -1;
     }
 
