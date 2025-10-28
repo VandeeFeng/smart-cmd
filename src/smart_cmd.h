@@ -28,6 +28,13 @@
 #define MAX_SESSION_ID 32
 #define MAX_PATH 512
 
+// LLM Client Constants
+#define MAX_HEADERS 10
+#define MAX_HEADER_LENGTH 300
+#define MAX_ENDPOINT_LENGTH 512
+#define MAX_SYSTEM_PROMPT_LENGTH 4096
+#define MAX_PROMPT_LENGTH 4110
+
 // User context - basic environment information
 typedef struct {
     char username[64];
