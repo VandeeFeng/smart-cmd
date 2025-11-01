@@ -10,6 +10,13 @@ BASH_SCRIPT="$SCRIPT_DIR/smart-cmd.bash"
 echo "Smart Command Completion Installation"
 echo "===================================="
 
+# Initialize git submodule if nob.h doesn't exist
+if [[ ! -d "$SCRIPT_DIR/nob.h" ]]; then
+    echo "Initializing nob.h submodule..."
+    cd "$SCRIPT_DIR"
+    git submodule update --init --recursive
+fi
+
 # Check if nob build system exists and build it if needed
 if [[ ! -f "$SCRIPT_DIR/nob" ]]; then
     echo "Building nob build system..."

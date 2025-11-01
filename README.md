@@ -22,12 +22,12 @@ cd smart-cmd
 source ~/.bashrc
 
 # Verify installation (optional)
-smart-cmd --help
+smart-cmd help or --help
 smart-cmd-mode
 ```
 
-- **install.sh**: Automated installation script that builds and installs all components
-- **uninstall.sh**: Clean removal script that safely uninstalls all components
+**install.sh**: Automated installation script that uses [nob.h](https://github.com/tsoding/nob.h) build system to compile and install all components
+**uninstall.sh**: Clean removal script that safely uninstalls all components
 
 **Important**: Make sure `~/.local/bin` is in your PATH. If commands are not found, add this to your `~/.bashrc`:
 
@@ -41,8 +41,12 @@ source ~/.bashrc
 If you prefer manual installation:
 
 ```bash
-# Build the project
-make clean && make
+# Initialize git submodules
+git submodule update --init --recursive
+
+# Build the project (uses nob.h build system)
+./nob
+# Or use make if you prefer: make clean && make
 
 # Install binaries
 cp smart-cmd ~/.local/bin/
@@ -248,7 +252,7 @@ chmod +x ~/.local/bin/smart-cmd.bash
 
 The `install.sh` script automates the entire setup process:
 
-- **Build Project**: Automatically runs `make clean && make` if binaries don't exist
+- **Build Project**: Uses nob.h build system to compile all components 
 - **Install Components**: Copies all necessary files to `~/.local/bin/`:
   - `smart-cmd`: Main utility program
   - `smart-cmd-completion`: Fallback completion backend
