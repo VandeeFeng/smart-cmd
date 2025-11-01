@@ -2,3 +2,6 @@ smart-cmd
 smart-cmd-completion
 smart-cmd-daemon
 .claude
+nob
+nob.h/
+*.old

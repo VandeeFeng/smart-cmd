@@ -10,14 +10,19 @@ BASH_SCRIPT="$SCRIPT_DIR/smart-cmd.bash"
 echo "Smart Command Completion Installation"
 echo "===================================="
 
-# Check if binaries exist in project root
-if [[ ! -f "$SCRIPT_DIR/smart-cmd-completion" ]] || \
-   [[ ! -f "$SCRIPT_DIR/smart-cmd-daemon" ]] || \
-   [[ ! -f "$SCRIPT_DIR/smart-cmd" ]]; then
-    echo "Building smart-cmd..."
+# Check if nob build system exists and build it if needed
+if [[ ! -f "$SCRIPT_DIR/nob" ]]; then
+    echo "Building nob build system..."
     cd "$SCRIPT_DIR"
-    make clean && make
+    cc -o nob nob.c
+else
+    echo "Nob build system found"
 fi
+
+# Always run nob build (it will automatically check if rebuild is needed)
+echo "Building smart-cmd with nob..."
+cd "$SCRIPT_DIR"
+./nob
 
 # Create ~/.local/bin if it doesn't exist
 mkdir -p "$HOME/.local/bin"
