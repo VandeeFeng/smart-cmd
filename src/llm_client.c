@@ -1,76 +1,69 @@
 #define _GNU_SOURCE
 #include "smart_cmd.h"
-#include <curl/curl.h>
-#include <json-c/json.h>
-#include <stdarg.h>
-#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
+#define MAX_BUFFER 8192
+#define MAX_CONTENT 4096
 
-// Request parameters structure for builder functions
 typedef struct {
-    const char *system_prompt;
-    const char *model;
-    double temperature;
-    int max_tokens;
-    const char *input;
-    const char *endpoint;
-} request_params_t;
+    char roles[5][12];
+    char contents[2+MAX_HISTORY_MESSAGES][MAX_CONTENT];
+    int msg_count;
+} Agent;
 
-// Unified request context for LLM operations
-typedef struct {
-    // HTTP request components
-    char headers[MAX_HEADERS][MAX_HEADER_LENGTH];
-    int header_count;
-    char *request_body;
 
-    // LLM context and response
-    const char *last_command;
-    const char *terminal_buffer;
-    const char *input;
-    char *response_data;
-    size_t response_size;
-} request_context_t;
+static char* json_find(const char* json, const char* key, char* out, size_t size) {
+    if (!json || !key || !out) return NULL;
+    char pattern[64];
+    snprintf(pattern, 64, "\"%s\":", key);
+    const char* start = strstr(json, pattern);
+    if (!start) return NULL;
+    start += strlen(pattern);
+    while (*start == ' ' || *start == '\t') start++;
 
-// Provider request structure
-typedef struct {
-    char *request_body;
-    char endpoint[MAX_ENDPOINT_LENGTH];
-} provider_request_t;
+    if (*start == '"') {
+        start++;
+        const char* end = start;
+        while (*end && *end != '"') {
+            if (*end == '\\' && end[1]) end += 2;
+            else end++;
+        }
+        size_t len = end - start;
+        if (len >= size) len = size - 1;
+        strncpy(out, start, len);
+        out[len] = '\0';
 
-// Provider builder function type
-typedef provider_request_t* (*provider_builder_func_t)(const request_params_t *params);
-
-// Extended provider configuration structure
-typedef struct {
-    const char *name;
-    provider_builder_func_t builder;
-    const char *default_endpoint;
-    const char *default_model;
-    bool needs_auth_token;
-    bool model_in_url;
-} provider_config_t;
-
-static size_t write_callback(void *contents, size_t size, size_t nmemb, request_context_t *ctx) {
-    size_t total_size = size * nmemb;
-    char *ptr = realloc(ctx->response_data, ctx->response_size + total_size + 1);
-    if (!ptr) return 0;
-
-    ctx->response_data = ptr;
-    memcpy(ctx->response_data + ctx->response_size, contents, total_size);
-    ctx->response_size += total_size;
-    ctx->response_data[ctx->response_size] = '\0';
-
-    return total_size;
+        for (char* p = out; *p; p++) {
+            if (*p == '\\' && p[1]) {
+                switch (p[1]) {
+                case 'n': *p = '\n'; memmove(p+1, p+2, strlen(p+1)); break;
+                case 't': *p = '\t'; memmove(p+1, p+2, strlen(p+1)); break;
+                case 'r': *p = '\r'; memmove(p+1, p+2, strlen(p+1)); break;
+                case '\\': case '"': memmove(p, p+1, strlen(p)); break;
+                }
+            }
+        }
+    } else {
+        const char* end = start;
+        while (*end && *end != ',' && *end != '}' && *end != ' ' && *end != '\n') end++;
+        size_t len = end - start;
+        if (len >= size) len = size - 1;
+        strncpy(out, start, len);
+        out[len] = '\0';
+    }
+    return out;
 }
 
-static void build_system_prompt(char *buffer, size_t buffer_size, const request_context_t *ctx) {
+static void build_system_prompt(char* buffer, size_t buffer_size, const session_context_t* ctx) {
     int pos = 0;
 
     pos += snprintf(buffer + pos, buffer_size - pos,
                     "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
                     "CONTEXT:\n");
 
-    if (ctx->terminal_buffer && strlen(ctx->terminal_buffer) > 0) {
+    if (strlen(ctx->terminal_buffer) > 0) {
         pos += snprintf(buffer + pos, buffer_size - pos, "Command History:\n%s\n", ctx->terminal_buffer);
     }
 
@@ -82,312 +75,162 @@ static void build_system_prompt(char *buffer, size_t buffer_size, const request_
              "4. Do NOT add any explanation. Your entire output must be just the prefix ('+' or '=') and the command.\n");
 }
 
-// Unified message creation function
-static json_object* create_message(const char *role, const char *content) {
-    json_object *message = json_object_new_object();
-    json_object_object_add(message, "role", json_object_new_string(role));
-    json_object_object_add(message, "content", json_object_new_string(content));
-    return message;
-}
+static char* json_request(const Agent* agent, const config_t* config, char* out, size_t size) {
+    if (!agent || !out) return NULL;
 
-// Build OpenAI-style messages array
-static json_object* build_openai_messages(const char *system_prompt, const char *input) {
-    json_object *messages = json_object_new_array();
-
-    json_object *system_msg = create_message("system", system_prompt);
-    json_object_array_add(messages, system_msg);
-
-    json_object *user_msg = create_message("user", input);
-    json_object_array_add(messages, user_msg);
-
-    return messages;
-}
-
-// Build Gemini-style content structure
-static json_object* build_gemini_content(const char *system_prompt, const char *input) {
-    json_object *contents = json_object_new_array();
-    json_object *content = json_object_new_object();
-    json_object *parts = json_object_new_array();
-    json_object *part = json_object_new_object();
-
-    char prompt[MAX_PROMPT_LENGTH];
-    snprintf(prompt, sizeof(prompt), "%s\n\nUser input: %s", system_prompt, input);
-
-    json_object_object_add(part, "text", json_object_new_string(prompt));
-    json_object_array_add(parts, part);
-    json_object_object_add(content, "parts", parts);
-    json_object_array_add(contents, content);
-
-    return contents;
-}
-
-// OpenAI provider request builder
-static provider_request_t* build_openai_request(const request_params_t *params) {
-    json_object *root = json_object_new_object();
-    json_object *messages = build_openai_messages(params->system_prompt, params->input);
-
-    json_object_object_add(root, "messages", messages);
-    json_object_object_add(root, "model", json_object_new_string(params->model));
-    json_object_object_add(root, "temperature", json_object_new_double(params->temperature));
-    json_object_object_add(root, "max_tokens", json_object_new_int(params->max_tokens));
-
-    provider_request_t *request = malloc(sizeof(provider_request_t));
-    if (!request) {
-        json_object_put(root);
-        return NULL;
+    if (strcmp(config->llm.provider, "gemini") == 0) {
+        // Gemini format: combine system+user into single message with parts
+        char combined_prompt[MAX_CONTENT * 2] = "";
+        for (int i = 0; i < agent->msg_count; i++) {
+            if (strcmp(agent->roles[i], "system") == 0) {
+                strcat(combined_prompt, agent->contents[i]);
+                strcat(combined_prompt, "\n\n");
+            } else if (strcmp(agent->roles[i], "user") == 0) {
+                strcat(combined_prompt, agent->contents[i]);
+            }
+        }
+        snprintf(out, size, "{\"contents\":[{\"parts\":[{\"text\":\"%s\"}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":100}}", combined_prompt);
+    } else {
+        // OpenAI format: standard messages array
+        char messages[MAX_BUFFER] = "[";
+        for (int i = 0; i < agent->msg_count; i++) {
+            if (i > 0) strcat(messages, ",");
+            char temp[MAX_CONTENT + 100];
+            snprintf(temp, sizeof(temp), "{\"role\":\"%s\",\"content\":\"%s\"}", agent->roles[i], agent->contents[i]);
+            if (strlen(messages) + strlen(temp) + 10 < sizeof(messages)) strcat(messages, temp);
+        }
+        strcat(messages, "]");
+        const char* model = config->llm.model[0] ? config->llm.model : "gpt-4.1-nano";
+        snprintf(out, size, "{\"model\":\"%s\",\"messages\":%s,\"temperature\":0.7,\"max_tokens\":100}", model, messages);
     }
 
-    const char *json_string = json_object_to_json_string(root);
-    request->request_body = strdup(json_string);
-    strncpy(request->endpoint, params->endpoint, sizeof(request->endpoint) - 1);
-    request->endpoint[sizeof(request->endpoint) - 1] = '\0';
-
-    json_object_put(root);
-    return request;
+    return out;
 }
 
-// Gemini provider request builder
-static provider_request_t* build_gemini_request(const request_params_t *params) {
-    json_object *root = json_object_new_object();
-    json_object *contents = build_gemini_content(params->system_prompt, params->input);
-    json_object *generation_config = json_object_new_object();
+static char* json_content(const char* response, char* out, size_t size) {
+    if (!response || !out) return NULL;
 
-    // Add generation configuration
-    json_object_object_add(generation_config, "temperature", json_object_new_double(params->temperature));
-    json_object_object_add(generation_config, "maxOutputTokens", json_object_new_int(params->max_tokens));
-
-    json_object_object_add(root, "contents", contents);
-    json_object_object_add(root, "generationConfig", generation_config);
-
-    provider_request_t *request = malloc(sizeof(provider_request_t));
-    if (!request) {
-        json_object_put(root);
-        return NULL;
-    }
-
-    const char *json_string = json_object_to_json_string(root);
-    request->request_body = strdup(json_string);
-
-    // Build full endpoint URL for Gemini: endpoint + model + :generateContent
-    snprintf(request->endpoint, sizeof(request->endpoint), "%s%s:generateContent", params->endpoint, params->model);
-
-    json_object_put(root);
-    return request;
-}
-
-// Unified provider registry
-static const provider_config_t providers[] = {
-    {
-        "openai",
-        build_openai_request,
-        "https://api.openai.com/v1/chat/completions",
-        "gpt-4.1-nano",
-        true,
-        false
-    },
-    {
-        "openrouter",
-        build_openai_request,
-        "https://openrouter.ai/api/v1/chat/completions",
-        "qwen/qwen3-coder:free",
-        true,
-        false
-    },
-    {
-        "gemini",
-        build_gemini_request,
-        "https://generativelanguage.googleapis.com/v1beta/models/",
-        "gemini-2.0-flash",
-        false,
-        true
-    },
-    {NULL, NULL, NULL, NULL, false, false}
-};
-
-// Provider configuration lookup function
-static const provider_config_t* get_provider_config(const char *provider_name) {
-    for (int i = 0; providers[i].name; i++) {
-        if (strcmp(provider_name, providers[i].name) == 0) {
-            return &providers[i];
+    // Try OpenAI format: choices[0].message.content
+    const char* choices = strstr(response, "\"choices\":");
+    if (choices) {
+        const char* message = strstr(choices, "\"message\":");
+        if (message) {
+            return json_find(message, "content", out, size);
         }
     }
+
+    // Try Gemini format: candidates[0].content.parts[0].text
+    const char* candidates = strstr(response, "\"candidates\":");
+    if (candidates) {
+        const char* content = strstr(candidates, "\"content\":");
+        if (content) {
+            const char* parts = strstr(content, "\"parts\":");
+            if (parts) {
+                char temp[1024];
+                if (json_find(parts, "text", temp, sizeof(temp))) {
+                    strncpy(out, temp, size - 1);
+                    out[size - 1] = '\0';
+                    return out;
+                }
+            }
+        }
+    }
+
     return NULL;
 }
 
-// Dynamic provider support validation
-static int is_provider_supported(const char *provider_name) {
-    for (int i = 0; providers[i].name; i++) {
-        if (strcmp(provider_name, providers[i].name) == 0) {
-            return 1;
-        }
+static int http_request(const char* req, char* resp, size_t resp_size, const config_t* config) {
+    char temp[] = "/tmp/ai_req_XXXXXX";
+    int fd = mkstemp(temp);
+    if (fd == -1) return -1;
+    write(fd, req, strlen(req));
+    close(fd);
+
+    // Build endpoint URL
+    char endpoint[512];
+    if (strcmp(config->llm.provider, "gemini") == 0) {
+        const char* model = config->llm.model[0] ? config->llm.model : "gemini-2.0-flash";
+        const char* base_url = config->llm.endpoint[0] ? config->llm.endpoint : "https://generativelanguage.googleapis.com/v1beta/models/";
+            snprintf(endpoint, sizeof(endpoint), "%s%s:generateContent", base_url, model);
+    } else {
+        const char* base_url = config->llm.endpoint[0] ? config->llm.endpoint : "https://api.openai.com/v1/chat/completions";
+        strncpy(endpoint, base_url, sizeof(endpoint) - 1);
+        endpoint[sizeof(endpoint) - 1] = '\0';
     }
+
+    char curl_template[MAX_BUFFER];
+    if (strcmp(config->llm.provider, "gemini") == 0) {
+        snprintf(curl_template, sizeof(curl_template),
+                 "curl -s -X POST '%s' -H 'Content-Type: application/json' -H 'x-goog-api-key: %s' -d @'%s' --max-time 60",
+                 endpoint, config->llm.api_key, temp);
+    } else {
+        snprintf(curl_template, sizeof(curl_template),
+                 "curl -s -X POST '%s' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @'%s' --max-time 60",
+                 endpoint, config->llm.api_key, temp);
+    }
+
+    FILE* pipe = popen(curl_template, "r");
+    if (!pipe) { unlink(temp); return -1; }
+
+    size_t bytes = fread(resp, 1, resp_size - 1, pipe);
+    resp[bytes] = '\0';
+    pclose(pipe);
+    unlink(temp);
     return 0;
 }
 
-// Setup authentication headers based on provider configuration
-static void setup_auth_headers(request_context_t *request, const config_t *config,
-                               const provider_config_t *provider) {
-    if (strlen(config->llm.api_key) == 0) return;
+static int parse_llm_response(const char* response_json, suggestion_t* suggestion) {
+    if (!response_json || !suggestion) return -1;
 
-    if (provider->needs_auth_token) {
-        snprintf(request->headers[1], sizeof(request->headers[1]),
-                 "Authorization: Bearer %s", config->llm.api_key);
-    } else {
-        snprintf(request->headers[1], sizeof(request->headers[1]),
-                 "x-goog-api-key: %s", config->llm.api_key);
-    }
-    request->header_count++;
-}
-
-static provider_request_t* build_llm_request(const char *system_prompt, const config_t *config, const char *input) {
-    const provider_config_t *provider = get_provider_config(config->llm.provider);
-    if (!provider) return NULL;
-
-    // Use user config if provided, otherwise use defaults
-    request_params_t params = {
-        .system_prompt = system_prompt,
-        .model = config->llm.model[0] ? config->llm.model : provider->default_model,
-        .temperature = 0.7,
-        .max_tokens = 100,
-        .input = input,
-        .endpoint = config->llm.endpoint[0] ? config->llm.endpoint : provider->default_endpoint
-    };
-
-    return provider->builder(&params);
-}
-
-static json_object* get_json_value_by_path(json_object *obj, const char *path) {
-    char path_copy[256];
-    strncpy(path_copy, path, sizeof(path_copy) - 1);
-    path_copy[sizeof(path_copy) - 1] = '\0';
-
-    char *token = strtok(path_copy, ".");
-    json_object *current = obj;
-
-    while (token && current) {
-        if (json_object_get_type(current) == json_type_array) {
-            int index = atoi(token);
-            if (index < 0 || index >= (int)json_object_array_length(current)) {
-                return NULL;
-            }
-            current = json_object_array_get_idx(current, index);
-        } else {
-            if (!json_object_object_get_ex(current, token, &current)) {
-                return NULL;
-            }
-        }
-        token = strtok(NULL, ".");
+    char content[MAX_CONTENT];
+    if (!json_content(response_json, content, sizeof(content))) {
+        return -1;
     }
 
-    return current;
-}
-
-static int parse_llm_response(const char *response_json, suggestion_t *suggestion, const char *provider) {
-    json_object *root = json_tokener_parse(response_json);
-    if (!root) return -1;
-
-    json_object *response_text_obj = NULL;
-
-    if (strcmp(provider, "gemini") == 0) {
-        response_text_obj = get_json_value_by_path(root, "candidates.0.content.parts.0.text");
-    } else {
-        response_text_obj = get_json_value_by_path(root, "choices.0.message.content");
-    }
-
-    const char *response_text = response_text_obj ? json_object_get_string(response_text_obj) : NULL;
-
-    if (response_text && strlen(response_text) > 0) {
-        suggestion->type = response_text[0];
-        strncpy(suggestion->suggestion, response_text + 1,
-                sizeof(suggestion->suggestion) - 1);
+    if (strlen(content) > 0) {
+        suggestion->type = content[0];
+        strncpy(suggestion->suggestion, content + 1, sizeof(suggestion->suggestion) - 1);
+        suggestion->suggestion[sizeof(suggestion->suggestion) - 1] = '\0';
         suggestion->suggestion[strcspn(suggestion->suggestion, "\n")] = 0;
         suggestion->visible = 1;
-        json_object_put(root);
         return 0;
     }
 
-    json_object_put(root);
     return -1;
-}
-
-static int send_http_request(const request_context_t *request, const char *endpoint) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
-
-    // Build headers from request structure
-    struct curl_slist *headers = NULL;
-    for (int i = 0; i < request->header_count; i++) {
-        headers = curl_slist_append(headers, request->headers[i]);
-    }
-
-    // Send request
-    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request->request_body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, (curl_write_callback)write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)request);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-
-    CURLcode res = curl_easy_perform(curl);
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    return (res == CURLE_OK) ? 0 : -1;
 }
 
 int send_to_llm(const char *input, const session_context_t *ctx, const config_t *config, suggestion_t *suggestion) {
     if (!input || !ctx || !config || !suggestion) return -1;
 
-    if (!is_provider_supported(config->llm.provider)) {
-        fprintf(stderr, "ERROR: send_to_llm: Unsupported LLM provider: %s\n", config->llm.provider);
-        return -1;
-    }
-
     memset(suggestion, 0, sizeof(suggestion_t));
 
-    // Initialize unified request context
-    request_context_t request = {0};
-    request.last_command = ctx->last_command;
-    request.terminal_buffer = ctx->terminal_buffer;
-    request.input = input;
-    request.response_data = NULL;
-    request.response_size = 0;
+    Agent agent = {0};
 
-    char system_prompt[MAX_SYSTEM_PROMPT_LENGTH];
-    build_system_prompt(system_prompt, sizeof(system_prompt), &request);
+    char system_prompt[MAX_CONTENT];
+    build_system_prompt(system_prompt, sizeof(system_prompt), ctx);
 
-    // Build provider request using new function
-    provider_request_t *provider_request = build_llm_request(system_prompt, config, input);
-    if (!provider_request) {
-        fprintf(stderr, "ERROR: send_to_llm: Failed to build provider request\n");
+    strcpy(agent.roles[0], "system");
+    strncpy(agent.contents[0], system_prompt, MAX_CONTENT - 1);
+    agent.contents[0][MAX_CONTENT - 1] = '\0';
+    agent.msg_count = 1;
+
+    strcpy(agent.roles[agent.msg_count], "user");
+    strncpy(agent.contents[agent.msg_count], input, MAX_CONTENT - 1);
+    agent.contents[agent.msg_count][MAX_CONTENT - 1] = '\0';
+    agent.msg_count++;
+
+    char req[MAX_BUFFER], resp[MAX_BUFFER];
+    json_request(&agent, config, req, sizeof(req));
+
+    if (http_request(req, resp, sizeof(resp), config)) {
+        fprintf(stderr, "ERROR: send_to_llm: HTTP request failed\n");
         return -1;
     }
 
-    // Setup request context
-    request.request_body = provider_request->request_body;
-    strncpy(request.headers[0], "Content-Type: application/json", sizeof(request.headers[0]) - 1);
-    request.headers[0][sizeof(request.headers[0]) - 1] = '\0';
-    request.header_count = 1;
-
-    // Setup authentication using provider configuration
-    const provider_config_t *provider = get_provider_config(config->llm.provider);
-    if (provider) {
-        setup_auth_headers(&request, config, provider);
+    int result = parse_llm_response(resp, suggestion);
+    if (result != 0) {
+        fprintf(stderr, "ERROR: send_to_llm: Failed to parse response\n");
     }
-
-    int result = send_http_request(&request, provider_request->endpoint);
-
-    if (result == 0 && request.response_data) {
-        result = parse_llm_response(request.response_data, suggestion, config->llm.provider);
-    } else {
-        fprintf(stderr, "ERROR: send_to_llm: HTTP request failed or no response data\n");
-        result = -1;
-    }
-
-    if (provider_request->request_body) free(provider_request->request_body);
-    if (provider_request) free(provider_request);
-    if (request.response_data) free(request.response_data);
 
     return result;
 }

@@ -216,7 +216,7 @@ int daemon_main_loop(int server_fd, int debug) {
 
                     // Add recent command history to the end of the context if there's space
                     char recent_commands[1024] = {0};
-                    if (get_recent_commands(&g_command_history, recent_commands, 3, 3600) > 0) {
+                    if (get_recent_commands(&g_command_history, recent_commands, MAX_HISTORY_MESSAGES, 3600) > 0) {
                         size_t current_len = strlen(ctx.terminal_buffer);
                         snprintf(ctx.terminal_buffer + current_len, sizeof(ctx.terminal_buffer) - current_len,
                                  "\n\nRecent user commands:\n%s", recent_commands);

@@ -79,11 +79,11 @@ static int get_command_history(session_context_t *ctx) {
 
         if (fp) {
             char line[MAX_INPUT_LEN];
-            char recent_commands[3][MAX_INPUT_LEN] = {0};
+            char recent_commands[MAX_HISTORY_MESSAGES][MAX_INPUT_LEN] = {0};
             int found = 0;
 
-            // Simple approach: read all lines and keep last 3 non-sensitive
-            while (fgets(line, sizeof(line), fp) && found < 3) {
+            // Simple approach: read all lines and keep last MAX_HISTORY_MESSAGES non-sensitive
+            while (fgets(line, sizeof(line), fp) && found < MAX_HISTORY_MESSAGES) {
                 line[strcspn(line, "\n")] = 0; // Remove newline
 
                 if (strlen(line) > 0 && !is_sensitive_command(line)) {

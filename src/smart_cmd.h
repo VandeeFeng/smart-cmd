@@ -34,6 +34,7 @@
 #define MAX_ENDPOINT_LENGTH 512
 #define MAX_SYSTEM_PROMPT_LENGTH 4096
 #define MAX_PROMPT_LENGTH 4110
+#define MAX_HISTORY_MESSAGES 3
 
 // User context - basic environment information
 typedef struct {
