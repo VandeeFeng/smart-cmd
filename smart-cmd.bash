@@ -61,8 +61,8 @@ _smart-cmd-show-hint() {
     local current_line="${READLINE_LINE}"
     local suggestion_type="${_SMART_CMD_CURRENT_SUGGESTION:0:1}"
     local suggestion_text="${_SMART_CMD_CURRENT_SUGGESTION:1}"
-    # Remove leading spaces from suggestion text for display
-    suggestion_text=$(echo "$suggestion_text" | sed 's/^ *//')
+    # Remove leading spaces and any leading + or = from suggestion text for display
+    suggestion_text=$(echo "$suggestion_text" | sed 's/^ *[+=]//')
 
     # Use tput to draw the hint without disturbing the current line
     tput sc
@@ -81,7 +81,7 @@ _smart-cmd-show-hint() {
     tput rc
     tput el
     echo -n "$current_line"
-    tput cub $(( ${#current_line} - READLINE_POINT ))
+    tput cub $((${#current_line} - READLINE_POINT))
   fi
 }
 
@@ -100,14 +100,8 @@ _smart-cmd-accept-hint() {
     tput cr
 
     case "$suggestion_type" in
-      "+")
-        local clean_suggestion=$(echo "$suggestion_text" | sed 's/^ *//')
-        READLINE_LINE="$clean_suggestion"
-        READLINE_POINT=$((${#READLINE_LINE}))
-        echo -n "$READLINE_LINE"
-        ;;
-      "=")
-        local clean_suggestion=$(echo "$suggestion_text" | sed 's/^ *//')
+      "+"|"=")
+        local clean_suggestion=$(echo "$suggestion_text" | sed 's/^ *[+=]//')
         READLINE_LINE="$clean_suggestion"
         READLINE_POINT=$((${#READLINE_LINE}))
         echo -n "$READLINE_LINE"
@@ -116,7 +110,7 @@ _smart-cmd-accept-hint() {
 
     _SMART_CMD_CURRENT_SUGGESTION=""
     _SMART_CMD_SHOWING_HINT=0
-    tput cub $(( ${#READLINE_LINE} - READLINE_POINT ))
+    tput cub $((${#READLINE_LINE} - READLINE_POINT))
   else
     if [[ $READLINE_POINT -lt ${#READLINE_LINE} ]]; then
       READLINE_POINT=$((READLINE_POINT + 1))
