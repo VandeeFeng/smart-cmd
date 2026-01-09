@@ -124,10 +124,10 @@ int read_from_daemon_pty(daemon_pty_t *pty, char *buffer, size_t buffer_size) {
             }
 
             // If buffer is getting full, make room
-            if ((size_t)pty->buffer_pos > sizeof(pty->buffer) / 2) {
+            if ((size_t)pty->buffer_pos >= sizeof(pty->buffer) / 2) {
                 size_t move_size = sizeof(pty->buffer) / 2;
-                memmove(pty->buffer, pty->buffer + move_size,
-                        (size_t)pty->buffer_pos - move_size);
+                size_t bytes_to_move = (size_t)pty->buffer_pos - move_size;
+                memmove(pty->buffer, pty->buffer + move_size, bytes_to_move);
                 pty->buffer_pos -= (int)move_size;
             }
 

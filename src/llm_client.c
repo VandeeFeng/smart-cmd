@@ -1,18 +1,15 @@
 #define _GNU_SOURCE
 #include "smart_cmd.h"
+#include "defaults.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-#define MAX_BUFFER 8192
-#define MAX_CONTENT 4096
-
 typedef struct {
     char roles[5][12];
-    char contents[2+MAX_HISTORY_MESSAGES][MAX_CONTENT];
+    char contents[2+LLM_MAX_HISTORY_MESSAGES][LLM_MAX_CONTENT];
     int msg_count;
 } Agent;
-
 
 static char* json_find(const char* json, const char* key, char* out, size_t size) {
     if (!json || !key || !out) return NULL;
@@ -79,8 +76,7 @@ static char* json_request(const Agent* agent, const config_t* config, char* out,
     if (!agent || !out) return NULL;
 
     if (strcmp(config->llm.provider, "gemini") == 0) {
-        // Gemini format: combine system+user into single message with parts
-        char combined_prompt[MAX_CONTENT * 2] = "";
+        char combined_prompt[LLM_MAX_CONTENT * 2] = "";
         for (int i = 0; i < agent->msg_count; i++) {
             if (strcmp(agent->roles[i], "system") == 0) {
                 strcat(combined_prompt, agent->contents[i]);
@@ -91,11 +87,10 @@ static char* json_request(const Agent* agent, const config_t* config, char* out,
         }
         snprintf(out, size, "{\"contents\":[{\"parts\":[{\"text\":\"%s\"}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":100}}", combined_prompt);
     } else {
-        // OpenAI format: standard messages array
-        char messages[MAX_BUFFER] = "[";
+        char messages[LLM_MAX_BUFFER] = "[";
         for (int i = 0; i < agent->msg_count; i++) {
             if (i > 0) strcat(messages, ",");
-            char temp[MAX_CONTENT + 100];
+            char temp[LLM_MAX_CONTENT + 100];
             snprintf(temp, sizeof(temp), "{\"role\":\"%s\",\"content\":\"%s\"}", agent->roles[i], agent->contents[i]);
             if (strlen(messages) + strlen(temp) + 10 < sizeof(messages)) strcat(messages, temp);
         }
@@ -140,9 +135,23 @@ static char* json_content(const char* response, char* out, size_t size) {
 }
 
 static int http_request(const char* req, char* resp, size_t resp_size, const config_t* config) {
-    char temp[] = "/tmp/ai_req_XXXXXX";
-    int fd = mkstemp(temp);
+    const char* tmpdir = getenv("TMPDIR");
+    if (!tmpdir || strlen(tmpdir) == 0) {
+        tmpdir = "/tmp";
+    }
+
+    char temp_path[512];
+    snprintf(temp_path, sizeof(temp_path), "%s/ai_req_XXXXXX", tmpdir);
+
+    int fd = mkstemp(temp_path);
     if (fd == -1) return -1;
+
+    if (fchmod(fd, 0600) == -1) {
+        close(fd);
+        unlink(temp_path);
+        return -1;
+    }
+
     write(fd, req, strlen(req));
     close(fd);
 
@@ -151,38 +160,38 @@ static int http_request(const char* req, char* resp, size_t resp_size, const con
     if (strcmp(config->llm.provider, "gemini") == 0) {
         const char* model = config->llm.model[0] ? config->llm.model : "gemini-2.0-flash";
         const char* base_url = config->llm.endpoint[0] ? config->llm.endpoint : "https://generativelanguage.googleapis.com/v1beta/models/";
-            snprintf(endpoint, sizeof(endpoint), "%s%s:generateContent", base_url, model);
+        snprintf(endpoint, sizeof(endpoint), "%s%s:generateContent", base_url, model);
     } else {
         const char* base_url = config->llm.endpoint[0] ? config->llm.endpoint : "https://api.openai.com/v1/chat/completions";
         strncpy(endpoint, base_url, sizeof(endpoint) - 1);
         endpoint[sizeof(endpoint) - 1] = '\0';
     }
 
-    char curl_template[MAX_BUFFER];
+    char curl_template[LLM_MAX_BUFFER];
     if (strcmp(config->llm.provider, "gemini") == 0) {
         snprintf(curl_template, sizeof(curl_template),
                  "curl -s -X POST '%s' -H 'Content-Type: application/json' -H 'x-goog-api-key: %s' -d @'%s' --max-time 60",
-                 endpoint, config->llm.api_key, temp);
+                 endpoint, config->llm.api_key, temp_path);
     } else {
         snprintf(curl_template, sizeof(curl_template),
                  "curl -s -X POST '%s' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @'%s' --max-time 60",
-                 endpoint, config->llm.api_key, temp);
+                 endpoint, config->llm.api_key, temp_path);
     }
 
     FILE* pipe = popen(curl_template, "r");
-    if (!pipe) { unlink(temp); return -1; }
+    if (!pipe) { unlink(temp_path); return -1; }
 
     size_t bytes = fread(resp, 1, resp_size - 1, pipe);
     resp[bytes] = '\0';
     pclose(pipe);
-    unlink(temp);
+    unlink(temp_path);
     return 0;
 }
 
 static int parse_llm_response(const char* response_json, suggestion_t* suggestion) {
     if (!response_json || !suggestion) return -1;
 
-    char content[MAX_CONTENT];
+    char content[LLM_MAX_CONTENT];
     if (!json_content(response_json, content, sizeof(content))) {
         return -1;
     }
@@ -206,23 +215,24 @@ int send_to_llm(const char *input, const session_context_t *ctx, const config_t 
 
     Agent agent = {0};
 
-    char system_prompt[MAX_CONTENT];
+    char system_prompt[LLM_MAX_CONTENT];
     build_system_prompt(system_prompt, sizeof(system_prompt), ctx);
 
     strcpy(agent.roles[0], "system");
-    strncpy(agent.contents[0], system_prompt, MAX_CONTENT - 1);
-    agent.contents[0][MAX_CONTENT - 1] = '\0';
+    strncpy(agent.contents[0], system_prompt, LLM_MAX_CONTENT - 1);
+    agent.contents[0][LLM_MAX_CONTENT - 1] = '\0';
     agent.msg_count = 1;
 
     strcpy(agent.roles[agent.msg_count], "user");
-    strncpy(agent.contents[agent.msg_count], input, MAX_CONTENT - 1);
-    agent.contents[agent.msg_count][MAX_CONTENT - 1] = '\0';
+    strncpy(agent.contents[agent.msg_count], input, LLM_MAX_CONTENT - 1);
+    agent.contents[agent.msg_count][LLM_MAX_CONTENT - 1] = '\0';
     agent.msg_count++;
 
-    char req[MAX_BUFFER], resp[MAX_BUFFER];
+    char req[LLM_MAX_BUFFER], resp[LLM_MAX_BUFFER];
     json_request(&agent, config, req, sizeof(req));
 
-    if (http_request(req, resp, sizeof(resp), config)) {
+    int err;
+    if ((err = http_request(req, resp, sizeof(resp), config)) != 0) {
         fprintf(stderr, "ERROR: send_to_llm: HTTP request failed\n");
         return -1;
     }
