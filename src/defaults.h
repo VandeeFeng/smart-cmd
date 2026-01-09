@@ -1,15 +1,29 @@
 #ifndef DEFAULTS_H
 #define DEFAULTS_H
 
+// Default endpoints for different LLM providers
 #define DEFAULT_OPENAI_ENDPOINT "https://api.openai.com/v1/chat/completions"
 #define DEFAULT_GEMINI_ENDPOINT "https://generativelanguage.googleapis.com/v1beta/models"
 #define DEFAULT_OPENROUTER_ENDPOINT "https://openrouter.ai/api/v1/chat/completions"
 
+// Command history limits
+#define MAX_HISTORY_COMMANDS 50
 #define DEFAULT_HISTORY_LIMIT 50
 #define DEFAULT_SESSION_TIMEOUT 3600
-#define DEFAULT_DAEMON_STARTUP_ATTEMPTS 10
 #define DEFAULT_DAEMON_STARTUP_DELAY 500000
+#define DEFAULT_DAEMON_STARTUP_ATTEMPTS 10
 
+// Buffer sizes for LLM client
+#define LLM_MAX_BUFFER 8192
+#define LLM_MAX_CONTENT 4096
+#define LLM_MAX_HEADERS 10
+#define LLM_MAX_HEADER_LENGTH 300
+#define LLM_MAX_ENDPOINT_LENGTH 512
+#define LLM_MAX_SYSTEM_PROMPT_LENGTH 4096
+#define LLM_MAX_PROMPT_LENGTH 4110
+#define LLM_MAX_HISTORY_MESSAGES 3
+
+// Message constants
 #define MSG_CONFIG_NOT_FOUND "No configuration file found, using defaults"
 #define MSG_DAEMON_START_FAILED "Failed to start daemon"
 #define MSG_DAEMON_NOT_FOUND "Daemon mode enabled but daemon not available"
@@ -27,6 +41,6 @@
 
 char* get_default_bin_path(const char* binary_name);
 char* get_config_file_path(void);
-char* get_temp_file_path(const char* prefix);
+int get_temp_file_path(char* path, size_t path_size, const char* prefix);
 
 #endif

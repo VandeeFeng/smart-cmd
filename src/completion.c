@@ -104,26 +104,6 @@ static int parse_context_json(const char *context_json, completion_context_t *ct
     return 0;
 }
 
-static int get_multiple_suggestions(const char *input, const completion_context_t *ctx,
-                                    const config_t *config, suggestion_t *suggestions, int max_suggestions) {
-    if (!input || !ctx || !config || !suggestions || max_suggestions <= 0) return -1;
-
-    int count = 0;
-
-    // First suggestion
-    if (send_to_llm(input, (const session_context_t*)ctx, config, &suggestions[count]) == 0) {
-        count++;
-    }
-
-    // Second suggestion
-    if (count < max_suggestions) {
-        // For now, skip to avoid complexity
-    }
-
-    return count;
-}
-
-
 static void print_suggestions_plain(suggestion_t *suggestions, int count) {
     if (count > 0) {
         printf("%c%s", suggestions[0].type, suggestions[0].suggestion);
@@ -199,7 +179,12 @@ int main(int argc, char *argv[]) {
 
     // Get suggestions
     suggestion_t suggestions[5];
-    int suggestion_count = get_multiple_suggestions(input, &ctx, &config, suggestions, 5);
+    int suggestion_count = 0;
+
+    // Get single suggestion
+    if (send_to_llm(input, (const session_context_t*)&ctx, &config, &suggestions[0]) == 0) {
+        suggestion_count = 1;
+    }
 
     if (suggestion_count > 0) {
         print_suggestions_plain(suggestions, suggestion_count);

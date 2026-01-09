@@ -56,8 +56,12 @@ int find_running_daemon(daemon_session_t *info) {
 }
 
 int cmd_toggle() {
-    char *state_file = get_temp_file_path("state");
-    if (!state_file) return -1;
+    char state_file[MAX_PATH];
+    int err;
+    if ((err = get_temp_file_path(state_file, sizeof(state_file), "state")) != 0) {
+        fprintf(stderr, "ERROR: cmd_toggle: Failed to get state file path\n");
+        return -1;
+    }
 
     FILE *f = fopen(state_file, "r");
     if (f) {
@@ -86,7 +90,6 @@ int cmd_toggle() {
         printf("%s\n", MSG_COMPLETION_ENABLED);
     }
 
-    free(state_file);
     return 0;
 }
 
@@ -117,7 +120,12 @@ int cmd_status() {
 int cmd_start() {
     config_t config;
     int err;
-    if ((err = load_config(&config)) != 0 || !config.enable_proxy_mode) {
+    if ((err = load_config(&config)) != 0) {
+        fprintf(stderr, "ERROR: cmd_start: Failed to load configuration\n");
+        return 1;
+    }
+
+    if (!config.enable_proxy_mode) {
         fprintf(stderr, "ERROR: cmd_start: Daemon mode is disabled in configuration\n");
         return 1;
     }
@@ -155,16 +163,18 @@ int cmd_start() {
     } else {
         free(daemon_bin);
 
-        usleep(DEFAULT_DAEMON_STARTUP_DELAY);
+        for (int attempt = 0; attempt < DEFAULT_DAEMON_STARTUP_ATTEMPTS; attempt++) {
+            usleep(DEFAULT_DAEMON_STARTUP_DELAY);
 
-        if (find_running_daemon(&info) == 0) {
-            printf("%s (PID: %d, Session: %s)\n",
-                   MSG_DAEMON_STARTED, info.daemon_pid, info.paths.session_id);
-            return 0;
-        } else {
-            fprintf(stderr, "ERROR: cmd_start: %s\n", MSG_DAEMON_START_FAILED);
-            return 1;
+            if (find_running_daemon(&info) == 0) {
+                printf("%s (PID: %d, Session: %s)\n",
+                       MSG_DAEMON_STARTED, info.daemon_pid, info.paths.session_id);
+                return 0;
+            }
         }
+
+        fprintf(stderr, "ERROR: cmd_start: %s\n", MSG_DAEMON_START_FAILED);
+        return 1;
     }
 }
 
@@ -199,18 +209,22 @@ int cmd_mode() {
     printf("  Config file: %s\n", config_path);
     free(config_path);
 
-    char *state_file = get_temp_file_path("state");
-    FILE *f = fopen(state_file, "r");
-    if (f) {
-        int enabled;
-        if (fscanf(f, "%d", &enabled) == 1) {
-            printf("  Smart completion: %s\n", enabled ? "enabled" : "disabled");
-        }
-        fclose(f);
+    char state_file[MAX_PATH];
+    int err;
+    if ((err = get_temp_file_path(state_file, sizeof(state_file), "state")) != 0) {
+        fprintf(stderr, "ERROR: cmd_mode: Failed to get state file path\n");
     } else {
-        printf("  Smart completion: enabled\n");
+        FILE *f = fopen(state_file, "r");
+        if (f) {
+            int enabled;
+            if (fscanf(f, "%d", &enabled) == 1) {
+                printf("  Smart completion: %s\n", enabled ? "enabled" : "disabled");
+            }
+            fclose(f);
+        } else {
+            printf("  Smart completion: enabled\n");
+        }
     }
-    free(state_file);
 
     if (config.enable_proxy_mode) {
         printf("\nDaemon features:\n");

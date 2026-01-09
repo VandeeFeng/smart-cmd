@@ -192,7 +192,8 @@ char* get_default_bin_path(const char* binary_name) {
     char* path = malloc(strlen(home) + strlen("/.local/bin/") + strlen(binary_name) + 1);
     if (!path) return NULL;
 
-    sprintf(path, "%s/.local/bin/%s", home, binary_name);
+    snprintf(path, strlen(home) + strlen("/.local/bin/") + strlen(binary_name) + 1,
+             "%s/.local/bin/%s", home, binary_name);
     return path;
 }
 
@@ -203,23 +204,26 @@ char* get_config_file_path(void) {
     char* path = malloc(strlen(home) + strlen("/.config/smart-cmd/config.json") + 1);
     if (!path) return NULL;
 
-    sprintf(path, "%s/.config/smart-cmd/config.json", home);
+    snprintf(path, strlen(home) + strlen("/.config/smart-cmd/config.json") + 1,
+             "%s/.config/smart-cmd/config.json", home);
     return path;
 }
 
-char* get_temp_file_path(const char* prefix) {
-    RETURN_IF_NULL(prefix, NULL);
+int get_temp_file_path(char* path, size_t path_size, const char* prefix) {
+    RETURN_IF_NULL(path, -1);
+    RETURN_IF_NULL(prefix, -1);
 
     char session_id[MAX_SESSION_ID];
-    if (generate_session_id(session_id, sizeof(session_id)) == -1) {
-        return NULL;
+    int err;
+    if ((err = generate_session_id(session_id, sizeof(session_id))) != 0) {
+        fprintf(stderr, "ERROR: get_temp_file_path: generate_session_id failed\n");
+        return -1;
     }
 
-    char temp_path[MAX_PATH];
-    if (generate_temp_file_path(temp_path, sizeof(temp_path), prefix, session_id) == -1) {
-        return NULL;
+    if ((err = generate_temp_file_path(path, path_size, prefix, session_id)) != 0) {
+        fprintf(stderr, "ERROR: get_temp_file_path: generate_temp_file_path failed\n");
+        return -1;
     }
 
-    return strdup(temp_path);
+    return 0;
 }
-
