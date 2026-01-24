@@ -11,60 +11,77 @@ typedef struct {
     int msg_count;
 } Agent;
 
+static void unescape_json_string(char* str) {
+    char* read = str;
+    char* write = str;
+
+    while (*read) {
+        if (*read == '\\' && read[1]) {
+            switch (read[1]) {
+            case 'n': *write++ = '\n'; read += 2; break;
+            case 't': *write++ = '\t'; read += 2; break;
+            case 'r': *write++ = '\r'; read += 2; break;
+            case '\\': case '"': *write++ = *++read; read++; break;
+            default: *write++ = *read++; read++; break;
+            }
+        } else {
+            *write++ = *read++;
+        }
+    }
+    *write = '\0';
+}
+
 static char* json_find(const char* json, const char* key, char* out, size_t size) {
-    if (!json || !key || !out) return NULL;
+    RETURN_IF_NULL(json, NULL);
+    RETURN_IF_NULL(key, NULL);
+    RETURN_IF_NULL(out, NULL);
+
     char pattern[64];
-    snprintf(pattern, 64, "\"%s\":", key);
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    
     const char* start = strstr(json, pattern);
     if (!start) return NULL;
+    
     start += strlen(pattern);
     while (*start == ' ' || *start == '\t') start++;
 
     if (*start == '"') {
         start++;
-        const char* end = start;
-        while (*end && *end != '"') {
-            if (*end == '\\' && end[1]) end += 2;
-            else end++;
-        }
-        size_t len = end - start;
+        const char* end = strchr(start, '"');
+        if (!end) return NULL;
+        
+        size_t len = (size_t)(end - start);
         if (len >= size) len = size - 1;
         strncpy(out, start, len);
         out[len] = '\0';
-
-        for (char* p = out; *p; p++) {
-            if (*p == '\\' && p[1]) {
-                switch (p[1]) {
-                case 'n': *p = '\n'; memmove(p+1, p+2, strlen(p+1)); break;
-                case 't': *p = '\t'; memmove(p+1, p+2, strlen(p+1)); break;
-                case 'r': *p = '\r'; memmove(p+1, p+2, strlen(p+1)); break;
-                case '\\': case '"': memmove(p, p+1, strlen(p)); break;
-                }
-            }
-        }
-    } else {
-        const char* end = start;
-        while (*end && *end != ',' && *end != '}' && *end != ' ' && *end != '\n') end++;
-        size_t len = end - start;
-        if (len >= size) len = size - 1;
-        strncpy(out, start, len);
-        out[len] = '\0';
+        
+        unescape_json_string(out);
+        return out;
     }
+
+    const char* end = start;
+    while (*end && *end != ',' && *end != '}' && *end != ' ' && *end != '\n') end++;
+    
+    size_t len = (size_t)(end - start);
+    if (len >= size) len = size - 1;
+    strncpy(out, start, len);
+    out[len] = '\0';
     return out;
 }
 
 static void build_system_prompt(char* buffer, size_t buffer_size, const session_context_t* ctx) {
-    int pos = 0;
+    int buffer_offset = 0;
 
-    pos += snprintf(buffer + pos, buffer_size - pos,
-                    "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
-                    "CONTEXT:\n");
+    buffer_offset += snprintf(buffer + buffer_offset, buffer_size - buffer_offset,
+                              "You are an AI command-line assistant. Your goal is to complete the user's command or suggest the next one.\n\n"
+                              "CONTEXT:\n");
 
-    if (strlen(ctx->terminal_buffer) > 0) {
-        pos += snprintf(buffer + pos, buffer_size - pos, "Command History:\n%s\n", ctx->terminal_buffer);
+    if (ctx->terminal_buffer[0] != '\0') {
+        buffer_offset += snprintf(buffer + buffer_offset, buffer_size - buffer_offset,
+                                  "Command History:\n%s\n", ctx->terminal_buffer);
     }
 
-    snprintf(buffer + pos, buffer_size - pos,
+    snprintf(buffer + buffer_offset, buffer_size - buffer_offset,
              "\nRULES:\n"
              "1. Your response must be a single command-line suggestion.\n"
              "2. If you are completing the user's partial command, your response MUST start with '+' followed by the ENTIRE completed command. Example: If the user input is 'git commi', your response should be '+git commit'.\n"
@@ -72,31 +89,52 @@ static void build_system_prompt(char* buffer, size_t buffer_size, const session_
              "4. Do NOT add any explanation. Your entire output must be just the prefix ('+' or '=') and the command.\n");
 }
 
+static void build_gemini_request(const Agent* agent, char* out, size_t size) {
+    char combined_prompt[LLM_MAX_CONTENT * 2] = "";
+    
+    for (int i = 0; i < agent->msg_count; i++) {
+        if (strcmp(agent->roles[i], "system") == 0) {
+            safe_string_append(combined_prompt, agent->contents[i], sizeof(combined_prompt));
+            safe_string_append(combined_prompt, "\n\n", sizeof(combined_prompt));
+        } else if (strcmp(agent->roles[i], "user") == 0) {
+            safe_string_append(combined_prompt, agent->contents[i], sizeof(combined_prompt));
+        }
+    }
+    
+    snprintf(out, size, 
+             "{\"contents\":[{\"parts\":[{\"text\":\"%s\"}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":100}}", 
+             combined_prompt);
+}
+
+static void build_openai_request(const Agent* agent, const config_t* config, char* out, size_t size) {
+    char messages[LLM_MAX_BUFFER] = "[";
+    int buffer_pos = 1;
+
+    for (int i = 0; i < agent->msg_count; i++) {
+        if (i > 0) {
+            messages[buffer_pos++] = ',';
+        }
+        buffer_pos += snprintf(messages + buffer_pos, sizeof(messages) - buffer_pos,
+                               "{\"role\":\"%s\",\"content\":\"%s\"}", 
+                               agent->roles[i], agent->contents[i]);
+    }
+    messages[buffer_pos] = '\0';
+    strcat(messages, "]");
+
+    const char* model = config->llm.model[0] ? config->llm.model : "gpt-4.1-nano";
+    snprintf(out, size, 
+             "{\"model\":\"%s\",\"messages\":%s,\"temperature\":0.7,\"max_tokens\":100}", 
+             model, messages);
+}
+
 static char* json_request(const Agent* agent, const config_t* config, char* out, size_t size) {
-    if (!agent || !out) return NULL;
+    RETURN_IF_NULL(agent, NULL);
+    RETURN_IF_NULL(out, NULL);
 
     if (strcmp(config->llm.provider, "gemini") == 0) {
-        char combined_prompt[LLM_MAX_CONTENT * 2] = "";
-        for (int i = 0; i < agent->msg_count; i++) {
-            if (strcmp(agent->roles[i], "system") == 0) {
-                strcat(combined_prompt, agent->contents[i]);
-                strcat(combined_prompt, "\n\n");
-            } else if (strcmp(agent->roles[i], "user") == 0) {
-                strcat(combined_prompt, agent->contents[i]);
-            }
-        }
-        snprintf(out, size, "{\"contents\":[{\"parts\":[{\"text\":\"%s\"}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":100}}", combined_prompt);
+        build_gemini_request(agent, out, size);
     } else {
-        char messages[LLM_MAX_BUFFER] = "[";
-        for (int i = 0; i < agent->msg_count; i++) {
-            if (i > 0) strcat(messages, ",");
-            char temp[LLM_MAX_CONTENT + 100];
-            snprintf(temp, sizeof(temp), "{\"role\":\"%s\",\"content\":\"%s\"}", agent->roles[i], agent->contents[i]);
-            if (strlen(messages) + strlen(temp) + 10 < sizeof(messages)) strcat(messages, temp);
-        }
-        strcat(messages, "]");
-        const char* model = config->llm.model[0] ? config->llm.model : "gpt-4.1-nano";
-        snprintf(out, size, "{\"model\":\"%s\",\"messages\":%s,\"temperature\":0.7,\"max_tokens\":100}", model, messages);
+        build_openai_request(agent, config, out, size);
     }
 
     return out;
@@ -136,28 +174,23 @@ static char* json_content(const char* response, char* out, size_t size) {
 
 static int http_request(const char* req, char* resp, size_t resp_size, const config_t* config) {
     const char* tmpdir = getenv("TMPDIR");
-    if (!tmpdir || strlen(tmpdir) == 0) {
-        tmpdir = "/tmp";
-    }
+    if (!tmpdir || strlen(tmpdir) == 0) tmpdir = "/tmp";
 
     char temp_path[512];
     snprintf(temp_path, sizeof(temp_path), "%s/ai_req_XXXXXX", tmpdir);
 
     int fd = mkstemp(temp_path);
     if (fd == -1) return -1;
-
-    if (fchmod(fd, 0600) == -1) {
-        close(fd);
-        unlink(temp_path);
-        return -1;
-    }
+    if (fchmod(fd, 0600) == -1) { close(fd); unlink(temp_path); return -1; }
 
     write(fd, req, strlen(req));
     close(fd);
 
     // Build endpoint URL
     char endpoint[512];
-    if (strcmp(config->llm.provider, "gemini") == 0) {
+    int is_gemini = (strcmp(config->llm.provider, "gemini") == 0);
+
+    if (is_gemini) {
         const char* model = config->llm.model[0] ? config->llm.model : "gemini-2.0-flash";
         const char* base_url = config->llm.endpoint[0] ? config->llm.endpoint : "https://generativelanguage.googleapis.com/v1beta/models/";
         snprintf(endpoint, sizeof(endpoint), "%s%s:generateContent", base_url, model);
@@ -167,18 +200,18 @@ static int http_request(const char* req, char* resp, size_t resp_size, const con
         endpoint[sizeof(endpoint) - 1] = '\0';
     }
 
-    char curl_template[LLM_MAX_BUFFER];
-    if (strcmp(config->llm.provider, "gemini") == 0) {
-        snprintf(curl_template, sizeof(curl_template),
+    char curl_cmd[LLM_MAX_BUFFER];
+    if (is_gemini) {
+        snprintf(curl_cmd, sizeof(curl_cmd),
                  "curl -s -X POST '%s' -H 'Content-Type: application/json' -H 'x-goog-api-key: %s' -d @'%s' --max-time 60",
                  endpoint, config->llm.api_key, temp_path);
     } else {
-        snprintf(curl_template, sizeof(curl_template),
+        snprintf(curl_cmd, sizeof(curl_cmd),
                  "curl -s -X POST '%s' -H 'Content-Type: application/json' -H 'Authorization: Bearer %s' -d @'%s' --max-time 60",
                  endpoint, config->llm.api_key, temp_path);
     }
 
-    FILE* pipe = popen(curl_template, "r");
+    FILE* pipe = popen(curl_cmd, "r");
     if (!pipe) { unlink(temp_path); return -1; }
 
     size_t bytes = fread(resp, 1, resp_size - 1, pipe);

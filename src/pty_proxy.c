@@ -10,18 +10,14 @@ int setup_daemon_pty(daemon_pty_t *pty, const char *session_id) {
     pty->master_fd = -1;
     pty->slave_fd = -1;
     snprintf(pty->session_id, sizeof(pty->session_id), "%s", session_id);
-
-    // Initialize buffer
     pty->buffer_pos = 0;
     pty->active = 0;
 
-    // Create pseudoterminal
     if (openpty(&pty->master_fd, &pty->slave_fd, NULL, NULL, NULL) == -1) {
         perror("openpty");
         return -1;
     }
 
-    // Fork child process
     pty->child_pid = fork();
     if (pty->child_pid == -1) {
         perror("fork");
@@ -33,35 +29,24 @@ int setup_daemon_pty(daemon_pty_t *pty, const char *session_id) {
     if (pty->child_pid == 0) {
         close(pty->master_fd);
         setsid();
-
         ioctl(pty->slave_fd, TIOCSCTTY, 0);
-
         setenv("SMART_CMD_DAEMON_SESSION", pty->session_id, 1);
 
-        // Duplicate slave fd to stdin, stdout, stderr
         dup2(pty->slave_fd, STDIN_FILENO);
         dup2(pty->slave_fd, STDOUT_FILENO);
         dup2(pty->slave_fd, STDERR_FILENO);
 
-        // Close slave fd (now duplicated)
-        if (pty->slave_fd > STDERR_FILENO) {
-            close(pty->slave_fd);
-        }
+        if (pty->slave_fd > STDERR_FILENO) close(pty->slave_fd);
 
         const char *shell = getenv("SHELL");
-        if (!shell) {
-            shell = "/bin/bash";
-        }
+        if (!shell) shell = "/bin/bash";
 
-        // Start the shell in interactive mode
         execl(shell, shell, "-i", (char*)NULL);
-
         perror("execl");
         exit(1);
     } else {
         close(pty->slave_fd);
 
-        // Set master_fd to non-blocking
         int flags = fcntl(pty->master_fd, F_GETFL, 0);
         fcntl(pty->master_fd, F_SETFL, flags | O_NONBLOCK);
 

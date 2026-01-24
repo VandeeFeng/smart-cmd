@@ -16,20 +16,14 @@ static int is_function_key_match(int expected_fn, const char *seq, size_t seq_le
     if (expected_fn < 1 || expected_fn > 12) return 0;
 
     // Handle F1-F4: OP, OQ, OR, OS format
-    if (expected_fn >= 1 && expected_fn <= 4 && seq_len >= 2) {
-        if (seq[0] == 'O') {
-            char expected_char = 'P' + (expected_fn - 1);
-            return seq[1] == expected_char;
-        }
-    }
+    if (expected_fn <= 4 && seq_len >= 2 && seq[0] == 'O')
+        return seq[1] == 'P' + (expected_fn - 1);
 
     // Handle F5-F12: [15~, [17~, [18~, [19~, [20~, [21~, [23~, [24~ format
-    if (expected_fn >= 5 && expected_fn <= 12 && seq_len >= 3) {
-        if (seq[0] == '[' && seq[2] == '~') {
-            const char *f5_to_f12_codes[] = {"15", "17", "18", "19", "20", "21", "23", "24"};
-            const char *expected_code = f5_to_f12_codes[expected_fn - 5];
-            return seq[1] == expected_code[0] && seq[2] == expected_code[1];
-        }
+    if (expected_fn >= 5 && seq_len >= 3 && seq[0] == '[' && seq[2] == '~') {
+        const char *codes[] = {"15", "17", "18", "19", "20", "21", "23", "24"};
+        const char *expected = codes[expected_fn - 5];
+        return seq[1] == expected[0] && seq[2] == expected[1];
     }
 
     return 0;

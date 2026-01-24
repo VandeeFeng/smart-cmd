@@ -6,54 +6,91 @@
 
 static char* expand_path(const char* path) {
     wordexp_t exp_result;
-    if (wordexp(path, &exp_result, 0) == 0) {
-        char* expanded = strdup(exp_result.we_wordv[0]);
-        wordfree(&exp_result);
-        return expanded;
-    }
-    return strdup(path);
+    if (wordexp(path, &exp_result, 0) != 0) return strdup(path);
+    char* expanded = strdup(exp_result.we_wordv[0]);
+    wordfree(&exp_result);
+    return expanded;
 }
 
 static int parse_keybinding(const char* key_str) {
-    if (!key_str) return 15; // Default to Ctrl+O (ASCII 15)
+    if (!key_str) return 15;
 
     // Handle ctrl+[a-z] combinations
     if (strncmp(key_str, "ctrl+", 5) == 0 && strlen(key_str) == 6) {
         char key = tolower(key_str[5]);
-        if (key >= 'a' && key <= 'z') {
-            return 1 + (key - 'a'); // Ctrl+A = 1, Ctrl+B = 2, ..., Ctrl+Z = 26
-        }
+        if (key >= 'a' && key <= 'z') return 1 + (key - 'a');
     }
 
     // Handle function keys f1-f12
-    if (strncmp(key_str, "f", 1) == 0 && strlen(key_str) >= 2 && strlen(key_str) <= 3) {
+    if (key_str[0] == 'f' && strlen(key_str) >= 2 && strlen(key_str) <= 3) {
         int fn = atoi(key_str + 1);
-        if (fn >= 1 && fn <= 12) {
-            // Return negative values to indicate function keys
-            return -(100 + fn); // f1 = -101, f2 = -102, ..., f12 = -112
-        }
+        if (fn >= 1 && fn <= 12) return -(100 + fn);
     }
 
     // Handle special keys
-    if (strcmp(key_str, "escape") == 0) return 27;
-    if (strcmp(key_str, "enter") == 0) return 13;
-    if (strcmp(key_str, "tab") == 0) return 9;
-    if (strcmp(key_str, "space") == 0) return 32;
-    if (strcmp(key_str, "backspace") == 0) return 127;
-
-    // Handle single character keys
-    if (strlen(key_str) == 1) {
-        return (unsigned char)key_str[0];
+    const char* specials[] = {"escape", "enter", "tab", "space", "backspace"};
+    const int codes[] = {27, 13, 9, 32, 127};
+    for (int i = 0; i < 5; i++) {
+        if (strcmp(key_str, specials[i]) == 0) return codes[i];
     }
 
-    // If no match, default to Ctrl+O
+    // Handle single character keys
+    if (strlen(key_str) == 1) return (unsigned char)key_str[0];
+
     return 15;
+}
+
+static void load_json_str(json_object *obj, const char *key, char *dest, size_t size) {
+    json_object *tmp;
+    if (json_object_object_get_ex(obj, key, &tmp)) {
+        snprintf(dest, size, "%s", json_object_get_string(tmp));
+    }
+}
+
+static void load_provider_config(json_object* root, config_t* config) {
+    char selected_provider[64] = "openai";
+    json_object* llm_obj;
+
+    if (json_object_object_get_ex(root, "llm", &llm_obj)) {
+        load_json_str(llm_obj, "provider", selected_provider, sizeof(selected_provider));
+    }
+    snprintf(config->llm.provider, sizeof(config->llm.provider), "%s", selected_provider);
+
+    json_object* providers_obj;
+    json_object* provider_config;
+
+    if (json_object_object_get_ex(root, "providers", &providers_obj) &&
+        json_object_object_get_ex(providers_obj, selected_provider, &provider_config)) {
+        load_json_str(provider_config, "model", config->llm.model, sizeof(config->llm.model));
+        load_json_str(provider_config, "endpoint", config->llm.endpoint, sizeof(config->llm.endpoint));
+    }
+
+    if (json_object_object_get_ex(root, "llm", &llm_obj)) {
+        load_json_str(llm_obj, "model", config->llm.model, sizeof(config->llm.model));
+        load_json_str(llm_obj, "endpoint", config->llm.endpoint, sizeof(config->llm.endpoint));
+        load_json_str(llm_obj, "api_key", config->llm.api_key, sizeof(config->llm.api_key));
+    }
+}
+
+static void load_api_key_from_env(config_t* config) {
+    const char* env_api_key = NULL;
+
+    if (strcmp(config->llm.provider, "openai") == 0) {
+        env_api_key = getenv("OPENAI_API_KEY");
+    } else if (strcmp(config->llm.provider, "gemini") == 0) {
+        env_api_key = getenv("GEMINI_API_KEY");
+    } else if (strcmp(config->llm.provider, "openrouter") == 0) {
+        env_api_key = getenv("OPENROUTER_API_KEY");
+    }
+
+    if (env_api_key && strlen(env_api_key) > 0) {
+        snprintf(config->llm.api_key, sizeof(config->llm.api_key), "%s", env_api_key);
+    }
 }
 
 int load_config(config_t *config) {
     if (!config) return -1;
 
-    // Set defaults
     strcpy(config->llm.provider, "openai");
     strcpy(config->llm.api_key, "");
     strcpy(config->llm.model, "gpt-4.1-nano");
@@ -66,20 +103,14 @@ int load_config(config_t *config) {
     char *config_path = expand_path(CONFIG_FILE_PATH);
     FILE *fp = fopen(config_path, "r");
     free(config_path);
-
-    if (!fp) {
-        return -1; // Config file not found, using defaults
-    }
+    if (!fp) return -1;
 
     fseek(fp, 0, SEEK_END);
     long file_size = ftell(fp);
     fseek(fp, 0, SEEK_SET);
 
     char *buffer = malloc(file_size + 1);
-    if (!buffer) {
-        fclose(fp);
-        return -1;
-    }
+    if (!buffer) { fclose(fp); return -1; }
 
     fread(buffer, 1, file_size, fp);
     buffer[file_size] = '\0';
@@ -87,79 +118,11 @@ int load_config(config_t *config) {
 
     json_object *root = json_tokener_parse(buffer);
     free(buffer);
+    if (!root) return -1;
 
-    if (!root) {
-        return -1;
-    }
+    load_provider_config(root, config);
+    load_api_key_from_env(config);
 
-    // First, determine which provider we're using
-    char selected_provider[64] = "openai"; // default
-    json_object *llm_obj;
-    if (json_object_object_get_ex(root, "llm", &llm_obj)) {
-        json_object *provider_obj;
-        if (json_object_object_get_ex(llm_obj, "provider", &provider_obj)) {
-            snprintf(selected_provider, sizeof(selected_provider), "%s",
-                     json_object_get_string(provider_obj));
-        }
-    }
-    snprintf(config->llm.provider, sizeof(config->llm.provider), "%s", selected_provider);
-
-    // Load default configuration from providers section
-    json_object *providers_obj;
-    if (json_object_object_get_ex(root, "providers", &providers_obj)) {
-        json_object *provider_config;
-        if (json_object_object_get_ex(providers_obj, selected_provider, &provider_config)) {
-            // Load default model
-            json_object *model_obj;
-            if (json_object_object_get_ex(provider_config, "model", &model_obj)) {
-                snprintf(config->llm.model, sizeof(config->llm.model), "%s",
-                         json_object_get_string(model_obj));
-            }
-            // Load default endpoint
-            json_object *endpoint_obj;
-            if (json_object_object_get_ex(provider_config, "endpoint", &endpoint_obj)) {
-                snprintf(config->llm.endpoint, sizeof(config->llm.endpoint), "%s",
-                         json_object_get_string(endpoint_obj));
-            }
-        }
-    }
-
-    // Override with user's custom llm configuration if provided
-    if (json_object_object_get_ex(root, "llm", &llm_obj)) {
-        json_object *model_obj;
-        if (json_object_object_get_ex(llm_obj, "model", &model_obj)) {
-            snprintf(config->llm.model, sizeof(config->llm.model), "%s",
-                     json_object_get_string(model_obj));
-        }
-
-        json_object *endpoint_obj;
-        if (json_object_object_get_ex(llm_obj, "endpoint", &endpoint_obj)) {
-            snprintf(config->llm.endpoint, sizeof(config->llm.endpoint), "%s",
-                     json_object_get_string(endpoint_obj));
-        }
-
-        json_object *api_key_obj;
-        if (json_object_object_get_ex(llm_obj, "api_key", &api_key_obj)) {
-            snprintf(config->llm.api_key, sizeof(config->llm.api_key), "%s",
-                     json_object_get_string(api_key_obj));
-        }
-    }
-
-    // Environment variables have highest priority for API keys
-    const char *env_api_key = NULL;
-    if (strcmp(config->llm.provider, "openai") == 0) {
-        env_api_key = getenv("OPENAI_API_KEY");
-    } else if (strcmp(config->llm.provider, "gemini") == 0) {
-        env_api_key = getenv("GEMINI_API_KEY");
-    } else if (strcmp(config->llm.provider, "openrouter") == 0) {
-        env_api_key = getenv("OPENROUTER_API_KEY");
-    }
-
-    if (env_api_key && strlen(env_api_key) > 0) {
-        snprintf(config->llm.api_key, sizeof(config->llm.api_key), "%s", env_api_key);
-    }
-
-    // Parse trigger key
     json_object *trigger_obj;
     if (json_object_object_get_ex(root, "trigger_key", &trigger_obj)) {
         const char *trigger_str = json_object_get_string(trigger_obj);
@@ -167,17 +130,11 @@ int load_config(config_t *config) {
         config->trigger_key_value = parse_keybinding(trigger_str);
     }
 
-    // Parse proxy mode setting
-    json_object *proxy_obj;
-    if (json_object_object_get_ex(root, "enable_proxy_mode", &proxy_obj)) {
+    json_object *proxy_obj, *startup_obj;
+    if (json_object_object_get_ex(root, "enable_proxy_mode", &proxy_obj))
         config->enable_proxy_mode = json_object_get_boolean(proxy_obj);
-    }
-
-    // Parse startup messages setting
-    json_object *startup_obj;
-    if (json_object_object_get_ex(root, "show_startup_messages", &startup_obj)) {
+    if (json_object_object_get_ex(root, "show_startup_messages", &startup_obj))
         config->show_startup_messages = json_object_get_boolean(startup_obj);
-    }
 
     json_object_put(root);
     return 0;
@@ -185,7 +142,6 @@ int load_config(config_t *config) {
 
 char* get_default_bin_path(const char* binary_name) {
     if (!binary_name) return NULL;
-
     const char* home = getenv("HOME");
     if (!home) home = "/tmp";
 
@@ -210,20 +166,9 @@ char* get_config_file_path(void) {
 }
 
 int get_temp_file_path(char* path, size_t path_size, const char* prefix) {
-    RETURN_IF_NULL(path, -1);
-    RETURN_IF_NULL(prefix, -1);
+    if (!path || !prefix) return -1;
 
     char session_id[MAX_SESSION_ID];
-    int err;
-    if ((err = generate_session_id(session_id, sizeof(session_id))) != 0) {
-        fprintf(stderr, "ERROR: get_temp_file_path: generate_session_id failed\n");
-        return -1;
-    }
-
-    if ((err = generate_temp_file_path(path, path_size, prefix, session_id)) != 0) {
-        fprintf(stderr, "ERROR: get_temp_file_path: generate_temp_file_path failed\n");
-        return -1;
-    }
-
-    return 0;
+    if (generate_session_id(session_id, sizeof(session_id)) != 0) return -1;
+    return generate_temp_file_path(path, path_size, prefix, session_id);
 }

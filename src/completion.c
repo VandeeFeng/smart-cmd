@@ -28,10 +28,35 @@ static void print_completion_version() {
     printf("smart-cmd-completion %s\n", VERSION);
 }
 
-static int parse_context_json(const char *context_json, completion_context_t *ctx) {
-    // Simple JSON parsing for the context
+static int extract_json_string(const char* json, const char* key, char* dest, size_t dest_size) {
+    char key_pattern[128];
+    snprintf(key_pattern, sizeof(key_pattern), "\"%s\":", key);
 
-    // Initialize defaults
+    const char* value_start = strstr(json, key_pattern);
+    if (!value_start) return -1;
+
+    value_start = strchr(value_start, '"');
+    if (!value_start) return -1;
+
+    value_start = strchr(value_start + 1, '"');
+    if (!value_start) return -1;
+
+    value_start++;
+
+    const char* value_end = strchr(value_start, '"');
+    if (!value_end) return -1;
+
+    size_t len = (size_t)(value_end - value_start);
+    if (len >= dest_size) len = dest_size - 1;
+
+    strncpy(dest, value_start, len);
+    dest[len] = '\0';
+    return 0;
+}
+
+static int parse_context_json(const char *context_json, completion_context_t *ctx) {
+    RETURN_IF_NULL(ctx, -1);
+
     memset(ctx, 0, sizeof(completion_context_t));
     getcwd(ctx->cwd, sizeof(ctx->cwd) - 1);
 
@@ -41,66 +66,18 @@ static int parse_context_json(const char *context_json, completion_context_t *ct
     }
     gethostname(ctx->hostname, sizeof(ctx->hostname) - 1);
 
-    // Parse JSON (basic string extraction)
-    if (context_json) {
-        char *json_copy = strdup(context_json);
-        if (!json_copy) return -1;
+    if (!context_json) return 0;
 
-        // Extract command_line
-        char *cmd_start = strstr(json_copy, "\"command_line\":");
-        if (cmd_start) {
-            cmd_start = strchr(cmd_start, '"');
-            if (cmd_start) cmd_start = strchr(cmd_start + 1, '"');
-            if (cmd_start) {
-                cmd_start++;
-                char *cmd_end = strchr(cmd_start, '"');
-                if (cmd_end) {
-                    *cmd_end = '\0';
-                    strncpy(ctx->input, cmd_start, sizeof(ctx->input) - 1);
-                }
-            }
-        }
+    char *json_copy = strdup(context_json);
+    if (!json_copy) return -1;
 
-        // Extract cwd
-        char *cwd_start = strstr(json_copy, "\"cwd\":");
-        if (cwd_start) {
-            cwd_start = strchr(cwd_start, '"');
-            if (cwd_start) cwd_start = strchr(cwd_start + 1, '"');
-            if (cwd_start) {
-                cwd_start++;
-                char *cwd_end = strchr(cwd_start, '"');
-                if (cwd_end) {
-                    *cwd_end = '\0';
-                    strncpy(ctx->cwd, cwd_start, sizeof(ctx->cwd) - 1);
-                }
-            }
-        }
+    extract_json_string(json_copy, "command_line", ctx->input, sizeof(ctx->input));
+    extract_json_string(json_copy, "cwd", ctx->cwd, sizeof(ctx->cwd));
+    extract_json_string(json_copy, "branch", ctx->git_branch, sizeof(ctx->git_branch));
 
-        // Extract git info if present
-        char *git_start = strstr(json_copy, "\"git\":");
-        if (git_start) {
-            // Extract branch
-            char *branch_start = strstr(git_start, "\"branch\":");
-            if (branch_start) {
-                branch_start = strchr(branch_start, '"');
-                if (branch_start) branch_start = strchr(branch_start + 1, '"');
-                if (branch_start) {
-                    branch_start++;
-                    char *branch_end = strchr(branch_start, '"');
-                    if (branch_end) {
-                        *branch_end = '\0';
-                        strncpy(ctx->git_branch, branch_start, sizeof(ctx->git_branch) - 1);
-                    }
-                }
-            }
+    ctx->git_dirty = (strstr(json_copy, "\"dirty\":true") != NULL);
 
-            // Extract dirty status
-            ctx->git_dirty = (strstr(git_start, "\"dirty\":true") != NULL);
-        }
-
-        free(json_copy);
-    }
-
+    free(json_copy);
     return 0;
 }
 

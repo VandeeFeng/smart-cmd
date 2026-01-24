@@ -49,42 +49,31 @@ void setup_signal_handlers(void (*handler)(int)) {
     sigaction(SIGCHLD, &sa, NULL);
 }
 
-int generate_lock_path(char *path, size_t size, const char *session_id) {
-    RETURN_IF_NULL(path, -1);
-    RETURN_IF_NULL(session_id, -1);
-
+static int generate_path(char *path, size_t size, const char *prefix, const char *session_id, const char *extra) {
+    if (!path || !session_id) return -1;
     const char *tmpdir = get_smart_cmd_tmpdir();
-    snprintf(path, size, "%s/%s.%s", tmpdir, LOCK_FILE_PREFIX, session_id);
+    if (extra)
+        snprintf(path, size, "%s/%s.%s.%s", tmpdir, prefix, session_id, extra);
+    else
+        snprintf(path, size, "%s/%s.%s", tmpdir, prefix, session_id);
     return 0;
 }
 
+int generate_lock_path(char *path, size_t size, const char *session_id) {
+    return generate_path(path, size, LOCK_FILE_PREFIX, session_id, NULL);
+}
 
 int generate_socket_path(char *path, size_t size, const char *session_id) {
-    RETURN_IF_NULL(path, -1);
-    RETURN_IF_NULL(session_id, -1);
-
-    const char *tmpdir = get_smart_cmd_tmpdir();
-    snprintf(path, size, "%s/%s.%s", tmpdir, SOCKET_FILE_PREFIX, session_id);
-    return 0;
+    return generate_path(path, size, SOCKET_FILE_PREFIX, session_id, NULL);
 }
 
 int generate_log_path(char *path, size_t size, const char *session_id) {
-    RETURN_IF_NULL(path, -1);
-    RETURN_IF_NULL(session_id, -1);
-
-    const char *tmpdir = get_smart_cmd_tmpdir();
-    snprintf(path, size, "%s/%s.%s", tmpdir, LOG_FILE_PREFIX, session_id);
-    return 0;
+    return generate_path(path, size, LOG_FILE_PREFIX, session_id, NULL);
 }
 
 int generate_temp_file_path(char *path, size_t size, const char *prefix, const char *session_id) {
-    RETURN_IF_NULL(path, -1);
-    RETURN_IF_NULL(prefix, -1);
-    RETURN_IF_NULL(session_id, -1);
-
-    const char *tmpdir = get_smart_cmd_tmpdir();
-    snprintf(path, size, "%s/%s.%s.%s", tmpdir, SMART_CMD_PREFIX, prefix, session_id);
-    return 0;
+    if (!prefix) return -1;
+    return generate_path(path, size, SMART_CMD_PREFIX, session_id, prefix);
 }
 
 int create_directory_if_not_exists(const char *dir_path) {
@@ -241,13 +230,17 @@ char *concat_remaining_args(int argc, char *argv[], int start_index) {
     char *result = malloc(total_len);
     if (!result) return NULL;
 
-    result[0] = '\0';
+    char *current = result;
     for (int i = start_index; i < argc; i++) {
-        strcat(result, argv[i]);
+        size_t len = strlen(argv[i]);
+        memcpy(current, argv[i], len);
+        current += len;
+
         if (i < argc - 1) {
-            strcat(result, " ");
+            *current++ = ' ';
         }
     }
+    *current = '\0';
 
     return result;
 }

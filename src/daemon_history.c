@@ -30,47 +30,32 @@ int init_command_history(command_history_manager_t *manager, const char *session
 void cleanup_command_history(command_history_manager_t *manager) {
     if (!manager) return;
 
-    // Save history before cleanup
     save_command_history(manager);
-
-    // Clear memory
     memset(manager, 0, sizeof(command_history_manager_t));
-}
-
-static int is_duplicate_command(const char *cmd1, const char *cmd2) {
-    return strcmp(cmd1, cmd2) == 0;
 }
 
 int add_command_to_history(command_history_manager_t *manager, const char *command) {
     if (!manager || !command || strlen(command) == 0) return -1;
     if (strlen(command) >= MAX_INPUT_LEN) return -1;
 
-    // Get current timestamp
     time_t now = time(NULL);
+    time_t cutoff_time = now - 3600;
 
-    // Remove old entries (older than 1 hour)
-    time_t cutoff_time = now - 3600; // 1 hour ago
-
-    // Clean old entries first
+    // Clean old entries
     int cleaned_count = 0;
     for (int i = 0; i < manager->count; i++) {
         if (manager->commands[i].timestamp < cutoff_time) {
             cleaned_count++;
-        } else {
-            // Move command forward if there were cleaned entries before it
-            if (cleaned_count > 0) {
-                manager->commands[i - cleaned_count] = manager->commands[i];
-            }
+        } else if (cleaned_count > 0) {
+            manager->commands[i - cleaned_count] = manager->commands[i];
         }
     }
     manager->count -= cleaned_count;
 
     // Check for duplicate with last command
     int last_index = (manager->current_index - 1 + 50) % 50;
-    if (manager->count > 0 &&
-        is_duplicate_command(command, manager->commands[last_index].command)) {
+    if (manager->count > 0 && strcmp(command, manager->commands[last_index].command) == 0)
         return 0; // Skip duplicate
-    }
 
     // Add new command using circular buffer
     int index = manager->current_index % MAX_HISTORY_COMMANDS;

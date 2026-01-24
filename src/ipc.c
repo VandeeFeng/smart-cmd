@@ -34,26 +34,25 @@ typedef struct {
 #define IPC_MAGIC 0x534D5443  // "SMTC"
 #define IPC_VERSION 1
 
+static void set_socket_timeout(int fd) {
+    struct timeval timeout;
+    timeout.tv_sec = IPC_TIMEOUT_MS / 1000;
+    timeout.tv_usec = (IPC_TIMEOUT_MS % 1000) * 1000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+}
+
 int validate_ipc_message(const char *message) {
     if (!message) return -1;
 
-    // Basic validation: check for null bytes and reasonable length
     size_t len = strlen(message);
-    if (len == 0 || len > MAX_IPC_MESSAGE_SIZE - sizeof(ipc_header_t)) {
-        return -1;
-    }
+    if (len == 0 || len > MAX_IPC_MESSAGE_SIZE - sizeof(ipc_header_t)) return -1;
 
-    // Check for potential injection attempts
     for (size_t i = 0; i < len; i++) {
-        if ((unsigned char)message[i] < 32 && message[i] != '\t' && message[i] != '\n') {
-            return -1; // Control characters not allowed
-        }
+        if ((unsigned char)message[i] < 32 && message[i] != '\t' && message[i] != '\n') return -1;
     }
 
-    // Check for suspicious patterns
-    if (strstr(message, "..") || strstr(message, "~") || strstr(message, "$(")) {
-        return -1; // Potential path traversal or command injection
-    }
+    if (strstr(message, "..") || strstr(message, "~") || strstr(message, "$(")) return -1;
 
     return 0;
 }
@@ -121,7 +120,6 @@ int accept_ipc_connection(int server_fd) {
     struct ucred cred;
     socklen_t cred_len = sizeof(cred);
     if (getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) == 0) {
-        // Verify that the peer is running as the same user
         if (cred.uid != getuid()) {
             fprintf(stderr, "ERROR: accept_client_connection: Rejecting connection from different user (UID: %d)\n", cred.uid);
             close(client_fd);
@@ -129,13 +127,7 @@ int accept_ipc_connection(int server_fd) {
         }
     }
 
-    // Set timeout for client operations
-    struct timeval timeout;
-    timeout.tv_sec = IPC_TIMEOUT_MS / 1000;
-    timeout.tv_usec = (IPC_TIMEOUT_MS % 1000) * 1000;
-
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    set_socket_timeout(client_fd);
 
     return client_fd;
 }
@@ -262,13 +254,7 @@ int connect_to_daemon(const char *socket_path) {
         return -1;
     }
 
-    // Set timeout for operations
-    struct timeval timeout;
-    timeout.tv_sec = IPC_TIMEOUT_MS / 1000;
-    timeout.tv_usec = (IPC_TIMEOUT_MS % 1000) * 1000;
-
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    set_socket_timeout(client_fd);
 
     return client_fd;
 }

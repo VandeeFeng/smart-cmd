@@ -242,14 +242,20 @@ static void handle_context_request(char *response, size_t response_size) {
 static void process_request(const char *request, char *response, size_t response_size, int debug) {
     if (strcmp(request, "ping") == 0) {
         handle_ping_request(response, response_size);
-    } else if (strncmp(request, "suggestion:", 11) == 0) {
-        const char *input = request + 11;
-        handle_suggestion_request(input, response, response_size, debug);
-    } else if (strncmp(request, "context", 7) == 0) {
-        handle_context_request(response, response_size);
-    } else {
-        snprintf(response, response_size, "%s", "error:Unknown request");
+        return;
     }
+
+    if (strncmp(request, "suggestion:", 11) == 0) {
+        handle_suggestion_request(request + 11, response, response_size, debug);
+        return;
+    }
+
+    if (strncmp(request, "context", 7) == 0) {
+        handle_context_request(response, response_size);
+        return;
+    }
+
+    snprintf(response, response_size, "%s", "error:Unknown request");
 }
 
 static void handle_ipc_connection(int server_fd, int debug) {

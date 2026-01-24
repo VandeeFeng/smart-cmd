@@ -46,25 +46,23 @@ static const char *sensitive_keywords[] = {
 };
 
 static int is_sensitive_command(const char *command) {
-    if (!command || strlen(command) == 0) return 0;
+    if (!command || command[0] == '\0') return 0;
 
     char lower_cmd[MAX_INPUT_LEN];
     strncpy(lower_cmd, command, sizeof(lower_cmd) - 1);
     lower_cmd[sizeof(lower_cmd) - 1] = '\0';
 
-    // Convert to lowercase for comparison
     for (int i = 0; lower_cmd[i]; i++) {
         lower_cmd[i] = tolower(lower_cmd[i]);
     }
 
-    // Check for sensitive keywords
     for (int i = 0; sensitive_keywords[i]; i++) {
         if (strstr(lower_cmd, sensitive_keywords[i]) != NULL) {
-            return 1; // Sensitive command found
+            return 1;
         }
     }
 
-    return 0; // Not sensitive
+    return 0;
 }
 
 static int get_command_history(session_context_t *ctx) {
@@ -107,7 +105,7 @@ static int get_command_history(session_context_t *ctx) {
 
                     if (remaining > 0) {
                         snprintf(ctx->terminal_buffer + buf_len, remaining,
-                                "%s%s", recent_commands[i], (i > 0) ? "; " : "");
+                                 "%s%s", recent_commands[i], (i > 0) ? "; " : "");
                     }
                 }
             }
@@ -119,34 +117,24 @@ static int get_command_history(session_context_t *ctx) {
     return 0;
 }
 
-static int detect_tmux(session_context_t *ctx) {
-    const char *tmux = getenv("TMUX");
-    if (tmux && strlen(tmux) > 0) {
-        // In tmux session - simplified detection
-        size_t buf_len = strlen(ctx->terminal_buffer);
-        size_t remaining = sizeof(ctx->terminal_buffer) - buf_len - 1;
+static int detect_multiplexer(session_context_t *ctx, const char *env_var, const char *name) {
+    const char *val = getenv(env_var);
+    if (!val || strlen(val) == 0) return 0;
 
-        if (remaining > 0) {
-            snprintf(ctx->terminal_buffer + buf_len, remaining, "[tmux session] ");
-        }
-        return 1;
-    }
-    return 0;
+    size_t buf_len = strlen(ctx->terminal_buffer);
+    size_t remaining = sizeof(ctx->terminal_buffer) - buf_len - 1;
+    if (remaining > 0)
+        snprintf(ctx->terminal_buffer + buf_len, remaining, "[%s] ", name);
+
+    return 1;
+}
+
+static int detect_tmux(session_context_t *ctx) {
+    return detect_multiplexer(ctx, "TMUX", "tmux session");
 }
 
 static int detect_screen(session_context_t *ctx) {
-    const char *stty = getenv("STY");
-    if (stty && strlen(stty) > 0) {
-        // In screen session
-        size_t buf_len = strlen(ctx->terminal_buffer);
-        size_t remaining = sizeof(ctx->terminal_buffer) - buf_len - 1;
-
-        if (remaining > 0) {
-            snprintf(ctx->terminal_buffer + buf_len, remaining, "[screen session] ");
-        }
-        return 1;
-    }
-    return 0;
+    return detect_multiplexer(ctx, "STY", "screen session");
 }
 
 static int get_environment_info(session_context_t *ctx) {

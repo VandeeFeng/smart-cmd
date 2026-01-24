@@ -15,21 +15,15 @@ int find_running_daemon(daemon_session_t *info) {
     snprintf(pattern, sizeof(pattern), "%s/%s.*", tmp_dir, LOCK_FILE_PREFIX);
 
     glob_t glob_result;
-    int ret = glob(pattern, 0, NULL, &glob_result);
-    if (ret != 0) {
-        globfree(&glob_result);
-        return -1;
-    }
+    if (glob(pattern, 0, NULL, &glob_result) != 0) return -1;
 
     for (size_t i = 0; i < glob_result.gl_pathc; i++) {
         const char *lock_file = glob_result.gl_pathv[i];
-
         FILE *f = fopen(lock_file, "r");
         if (f) {
             pid_t pid;
             if (fscanf(f, "%d", &pid) == 1 && is_process_running(pid)) {
                 fclose(f);
-
                 info->daemon_pid = pid;
                 safe_string_copy(info->paths.lock_file, lock_file, sizeof(info->paths.lock_file));
 
@@ -37,10 +31,8 @@ int find_running_daemon(daemon_session_t *info) {
                 const char *session_start = strrchr(filename, '.');
                 if (session_start) {
                     safe_string_copy(info->paths.session_id, session_start + 1, sizeof(info->paths.session_id));
-
-                    // Generate socket path
                     generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path),
-                                      info->paths.session_id);
+                                         info->paths.session_id);
                 }
 
                 info->active = 1;
@@ -55,41 +47,60 @@ int find_running_daemon(daemon_session_t *info) {
     return -1;
 }
 
-int cmd_toggle() {
+static int read_completion_state(int* enabled) {
     char state_file[MAX_PATH];
     int err;
     if ((err = get_temp_file_path(state_file, sizeof(state_file), "state")) != 0) {
-        fprintf(stderr, "ERROR: cmd_toggle: Failed to get state file path\n");
         return -1;
     }
 
-    FILE *f = fopen(state_file, "r");
-    if (f) {
-        int enabled;
-        if (fscanf(f, "%d", &enabled) == 1) {
-            fclose(f);
-            enabled = !enabled;
-        } else {
-            fclose(f);
-            enabled = 1;
-        }
-
-        f = fopen(state_file, "w");
-        if (f) {
-            fprintf(f, "%d", enabled);
-            fclose(f);
-        }
-
-        printf("%s\n", enabled ? MSG_COMPLETION_ENABLED : MSG_COMPLETION_DISABLED);
-    } else {
-        f = fopen(state_file, "w");
-        if (f) {
-            fprintf(f, "1");
-            fclose(f);
-        }
-        printf("%s\n", MSG_COMPLETION_ENABLED);
+    FILE* f = fopen(state_file, "r");
+    if (!f) {
+        *enabled = 1;
+        return 0;
     }
 
+    if (fscanf(f, "%d", enabled) != 1) {
+        fclose(f);
+        *enabled = 1;
+        return 0;
+    }
+
+    fclose(f);
+    return 0;
+}
+
+static int write_completion_state(int enabled) {
+    char state_file[MAX_PATH];
+    int err;
+    if ((err = get_temp_file_path(state_file, sizeof(state_file), "state")) != 0) {
+        return -1;
+    }
+
+    FILE* f = fopen(state_file, "w");
+    if (!f) return -1;
+
+    fprintf(f, "%d", enabled);
+    fclose(f);
+    return 0;
+}
+
+int cmd_toggle() {
+    int enabled;
+    
+    if (read_completion_state(&enabled) != 0) {
+        fprintf(stderr, "ERROR: cmd_toggle: Failed to read completion state\n");
+        return -1;
+    }
+
+    enabled = !enabled;
+
+    if (write_completion_state(enabled) != 0) {
+        fprintf(stderr, "ERROR: cmd_toggle: Failed to write completion state\n");
+        return -1;
+    }
+
+    printf("%s\n", enabled ? MSG_COMPLETION_ENABLED : MSG_COMPLETION_DISABLED);
     return 0;
 }
 
