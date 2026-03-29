@@ -46,11 +46,25 @@ static int extract_json_string(const char* json, const char* key, char* dest, si
     const char* value_end = strchr(value_start, '"');
     if (!value_end) return -1;
 
-    size_t len = (size_t)(value_end - value_start);
+    size_t len = value_end - value_start;
     if (len >= dest_size) len = dest_size - 1;
 
-    strncpy(dest, value_start, len);
+    memcpy(dest, value_start, len);
     dest[len] = '\0';
+    return 0;
+}
+
+static int parse_json_fields(const char *context_json, completion_context_t *ctx) {
+    char *json_copy = strdup(context_json);
+    if (!json_copy) return -1;
+
+    extract_json_string(json_copy, "command_line", ctx->input, sizeof(ctx->input));
+    extract_json_string(json_copy, "cwd", ctx->cwd, sizeof(ctx->cwd));
+    extract_json_string(json_copy, "branch", ctx->git_branch, sizeof(ctx->git_branch));
+
+    ctx->git_dirty = (strstr(json_copy, "\"dirty\":true") != NULL);
+
+    free(json_copy);
     return 0;
 }
 
@@ -67,18 +81,7 @@ static int parse_context_json(const char *context_json, completion_context_t *ct
     gethostname(ctx->hostname, sizeof(ctx->hostname) - 1);
 
     if (!context_json) return 0;
-
-    char *json_copy = strdup(context_json);
-    if (!json_copy) return -1;
-
-    extract_json_string(json_copy, "command_line", ctx->input, sizeof(ctx->input));
-    extract_json_string(json_copy, "cwd", ctx->cwd, sizeof(ctx->cwd));
-    extract_json_string(json_copy, "branch", ctx->git_branch, sizeof(ctx->git_branch));
-
-    ctx->git_dirty = (strstr(json_copy, "\"dirty\":true") != NULL);
-
-    free(json_copy);
-    return 0;
+    return parse_json_fields(context_json, ctx);
 }
 
 static void print_suggestions_plain(suggestion_t *suggestions, int count) {

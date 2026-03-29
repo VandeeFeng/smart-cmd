@@ -3,13 +3,13 @@ CFLAGS = -Wall -Wextra -std=c99 -O2 -DVERSION='"1.0.0"'
 LIBS = -lutil -lcurl -ljson-c
 
 # Source files
-CORE_SOURCES = src/config.c src/llm_client.c src/basic_context.c src/pty_proxy.c src/daemon.c src/ipc.c src/daemon_history.c src/manager.c src/completion.c src/utils.c
+CORE_SOURCES = src/config.c src/llm_client.c src/basic_context.c src/pty_proxy.c src/daemon.c src/ipc.c src/jrpc.c src/daemon_history.c src/manager.c src/completion.c src/utils.c
 MAIN_SOURCES = src/main.c
 COMPLETION_SOURCES = src/completion.c
-DAEMON_SOURCES = src/smart_cmd_daemon.c
+DAEMON_SOURCES = src/smart_cmd_daemon.c src/daemon_jrpc.c
 
 # Header files
-HEADERS = src/smart_cmd.h src/defaults.h src/utils.h
+HEADERS = src/smart_cmd.h src/defaults.h src/utils.h src/jrpc.h src/daemon_jrpc.h
 
 .PHONY: all clean test completion daemon install uninstall
 
@@ -26,7 +26,7 @@ smart-cmd-completion: $(COMPLETION_SOURCES) $(CORE_SOURCES)
 	$(CC) $(CFLAGS) -DCOMPLETION_BINARY $^ -o $@ $(LIBS)
 
 smart-cmd-daemon: $(DAEMON_SOURCES) $(CORE_SOURCES)
-	$(CC) $(CFLAGS) -DDAEMON_BINARY $^ -o $@ $(LIBS)
+	$(CC) $(CFLAGS) -DDAEMON_BINARY src/smart_cmd_daemon.c src/daemon_jrpc.c $(CORE_SOURCES) -o $@ $(LIBS)
 
 clean:
 	rm -f smart-cmd smart-cmd-completion smart-cmd-daemon

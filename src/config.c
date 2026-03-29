@@ -15,27 +15,29 @@ static char* expand_path(const char* path) {
 static int parse_keybinding(const char* key_str) {
     if (!key_str) return 15;
 
+    size_t len = strlen(key_str);
+
     // Handle ctrl+[a-z] combinations
-    if (strncmp(key_str, "ctrl+", 5) == 0 && strlen(key_str) == 6) {
-        char key = tolower(key_str[5]);
-        if (key >= 'a' && key <= 'z') return 1 + (key - 'a');
+    if (len == 6 && strncmp(key_str, "ctrl+", 5) == 0) {
+        char key = toupper(key_str[5]);
+        if (key >= 'A' && key <= 'Z') return 1 + (key - 'A');
     }
 
     // Handle function keys f1-f12
-    if (key_str[0] == 'f' && strlen(key_str) >= 2 && strlen(key_str) <= 3) {
+    if (len >= 2 && len <= 3 && key_str[0] == 'f') {
         int fn = atoi(key_str + 1);
         if (fn >= 1 && fn <= 12) return -(100 + fn);
     }
 
     // Handle special keys
-    const char* specials[] = {"escape", "enter", "tab", "space", "backspace"};
-    const int codes[] = {27, 13, 9, 32, 127};
-    for (int i = 0; i < 5; i++) {
-        if (strcmp(key_str, specials[i]) == 0) return codes[i];
-    }
+    if (strcmp(key_str, "escape") == 0) return 27;
+    if (strcmp(key_str, "enter") == 0) return 13;
+    if (strcmp(key_str, "tab") == 0) return 9;
+    if (strcmp(key_str, "space") == 0) return 32;
+    if (strcmp(key_str, "backspace") == 0) return 127;
 
     // Handle single character keys
-    if (strlen(key_str) == 1) return (unsigned char)key_str[0];
+    if (len == 1) return (unsigned char)key_str[0];
 
     return 15;
 }
@@ -45,6 +47,37 @@ static void load_json_str(json_object *obj, const char *key, char *dest, size_t 
     if (json_object_object_get_ex(obj, key, &tmp)) {
         snprintf(dest, size, "%s", json_object_get_string(tmp));
     }
+}
+
+static void init_default_config(config_t *config) {
+    strcpy(config->llm.provider, "openai");
+    strcpy(config->llm.api_key, "");
+    strcpy(config->llm.model, "gpt-4.1-nano");
+    strcpy(config->llm.endpoint, DEFAULT_OPENAI_ENDPOINT);
+    strcpy(config->trigger_key, "ctrl+o");
+    config->trigger_key_value = parse_keybinding("ctrl+o");
+    config->enable_proxy_mode = 1;
+    config->show_startup_messages = 1;
+}
+
+static int read_and_parse_config_file(const char *config_path, json_object **root_out) {
+    FILE *fp = fopen(config_path, "r");
+    if (!fp) return -1;
+
+    fseek(fp, 0, SEEK_END);
+    long file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    char *buffer = malloc(file_size + 1);
+    if (!buffer) { fclose(fp); return -1; }
+
+    fread(buffer, 1, file_size, fp);
+    buffer[file_size] = '\0';
+    fclose(fp);
+
+    *root_out = json_tokener_parse(buffer);
+    free(buffer);
+    return (*root_out == NULL) ? -1 : 0;
 }
 
 static void load_provider_config(json_object* root, config_t* config) {
@@ -91,34 +124,18 @@ static void load_api_key_from_env(config_t* config) {
 int load_config(config_t *config) {
     if (!config) return -1;
 
-    strcpy(config->llm.provider, "openai");
-    strcpy(config->llm.api_key, "");
-    strcpy(config->llm.model, "gpt-4.1-nano");
-    strcpy(config->llm.endpoint, DEFAULT_OPENAI_ENDPOINT);
-    strcpy(config->trigger_key, "ctrl+o");
-    config->trigger_key_value = parse_keybinding("ctrl+o");
-    config->enable_proxy_mode = 1;
-    config->show_startup_messages = 1;
+    init_default_config(config);
 
     char *config_path = expand_path(CONFIG_FILE_PATH);
-    FILE *fp = fopen(config_path, "r");
+    if (!config_path) return -1;
+
+    json_object *root = NULL;
+    int err;
+    if ((err = read_and_parse_config_file(config_path, &root)) != 0) {
+        free(config_path);
+        return err;
+    }
     free(config_path);
-    if (!fp) return -1;
-
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    char *buffer = malloc(file_size + 1);
-    if (!buffer) { fclose(fp); return -1; }
-
-    fread(buffer, 1, file_size, fp);
-    buffer[file_size] = '\0';
-    fclose(fp);
-
-    json_object *root = json_tokener_parse(buffer);
-    free(buffer);
-    if (!root) return -1;
 
     load_provider_config(root, config);
     load_api_key_from_env(config);
@@ -140,29 +157,27 @@ int load_config(config_t *config) {
     return 0;
 }
 
-char* get_default_bin_path(const char* binary_name) {
-    if (!binary_name) return NULL;
+static char* build_path_under_home(const char* relative_path) {
     const char* home = getenv("HOME");
     if (!home) home = "/tmp";
 
-    char* path = malloc(strlen(home) + strlen("/.local/bin/") + strlen(binary_name) + 1);
+    char* path = malloc(strlen(home) + strlen(relative_path) + 1);
     if (!path) return NULL;
 
-    snprintf(path, strlen(home) + strlen("/.local/bin/") + strlen(binary_name) + 1,
-             "%s/.local/bin/%s", home, binary_name);
+    snprintf(path, strlen(home) + strlen(relative_path) + 1, "%s%s", home, relative_path);
     return path;
 }
 
+char* get_default_bin_path(const char* binary_name) {
+    if (!binary_name) return NULL;
+
+    char relative_path[128];
+    snprintf(relative_path, sizeof(relative_path), "/.local/bin/%s", binary_name);
+    return build_path_under_home(relative_path);
+}
+
 char* get_config_file_path(void) {
-    const char* home = getenv("HOME");
-    if (!home) home = "/tmp";
-
-    char* path = malloc(strlen(home) + strlen("/.config/smart-cmd/config.json") + 1);
-    if (!path) return NULL;
-
-    snprintf(path, strlen(home) + strlen("/.config/smart-cmd/config.json") + 1,
-             "%s/.config/smart-cmd/config.json", home);
-    return path;
+    return build_path_under_home("/.config/smart-cmd/config.json");
 }
 
 int get_temp_file_path(char* path, size_t path_size, const char* prefix) {

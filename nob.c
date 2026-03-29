@@ -12,6 +12,7 @@ const char *core_sources[] = {
     "src/pty_proxy.c",
     "src/daemon.c",
     "src/ipc.c",
+    "src/jrpc.c",
     "src/daemon_history.c",
     "src/manager.c",
     "src/completion.c",
@@ -52,12 +53,21 @@ bool build_target(Build_Target target)
         }
     }
 
+    if (strcmp(target.output, "smart-cmd-daemon") == 0) {
+        nob_cmd_append(&cmd, "src/daemon_jrpc.c");
+    }
+
     nob_cmd_append(&cmd, "-lutil", "-lcurl", "-ljson-c");
 
     const char **input_paths = NULL;
     size_t input_count = 0;
 
-    input_paths = temp_alloc(sizeof(const char*) * (ARRAY_LEN(core_sources) + 1));
+    size_t max_inputs = ARRAY_LEN(core_sources) + 1;
+    if (strcmp(target.output, "smart-cmd-daemon") == 0) {
+        max_inputs += 1;
+    }
+
+    input_paths = temp_alloc(sizeof(const char*) * max_inputs);
     input_paths[0] = target.main_source;
     input_count = 1;
 
@@ -65,6 +75,10 @@ bool build_target(Build_Target target)
         if (strcmp(target.main_source, core_sources[i]) != 0) {
             input_paths[input_count++] = core_sources[i];
         }
+    }
+
+    if (strcmp(target.output, "smart-cmd-daemon") == 0) {
+        input_paths[input_count++] = "src/daemon_jrpc.c";
     }
 
     if (nob_needs_rebuild(target.output, input_paths, input_count) > 0) {

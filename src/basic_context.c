@@ -17,10 +17,8 @@ static int get_user_info(session_context_t *ctx) {
 
     snprintf(ctx->user.username, sizeof(ctx->user.username), "%s", pw->pw_name);
 
-    // Get hostname
     if (gethostname(ctx->user.hostname, sizeof(ctx->user.hostname) - 1) == -1) {
-        strncpy(ctx->user.hostname, "localhost", sizeof(ctx->user.hostname) - 1);
-        ctx->user.hostname[sizeof(ctx->user.hostname) - 1] = '\0';
+        snprintf(ctx->user.hostname, sizeof(ctx->user.hostname), "localhost");
     }
 
     return 0;
@@ -28,8 +26,7 @@ static int get_user_info(session_context_t *ctx) {
 
 static int get_current_directory(session_context_t *ctx) {
     if (getcwd(ctx->user.cwd, sizeof(ctx->user.cwd) - 1) == NULL) {
-        strncpy(ctx->user.cwd, "/unknown", sizeof(ctx->user.cwd) - 1);
-        ctx->user.cwd[sizeof(ctx->user.cwd) - 1] = '\0';
+        snprintf(ctx->user.cwd, sizeof(ctx->user.cwd), "/unknown");
         return -1;
     }
     return 0;

@@ -5,11 +5,15 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+#define LLM_MSG_BUFFER_MAX 5
+#define LLM_ROLE_MAX_LENGTH 12
+#define LLM_MSG_BASE_COUNT 2  // system + user
+
 typedef struct {
-    char roles[5][12];
-    char contents[2+LLM_MAX_HISTORY_MESSAGES][LLM_MAX_CONTENT];
+    char roles[LLM_MSG_BUFFER_MAX][LLM_ROLE_MAX_LENGTH];
+    char contents[LLM_MSG_BASE_COUNT+LLM_MAX_HISTORY_MESSAGES][LLM_MAX_CONTENT];
     int msg_count;
-} Agent;
+} llm_message_buffer;
 
 static void unescape_json_string(char* str) {
     char* read = str;
@@ -17,13 +21,16 @@ static void unescape_json_string(char* str) {
 
     while (*read) {
         if (*read == '\\' && read[1]) {
-            switch (read[1]) {
-            case 'n': *write++ = '\n'; read += 2; break;
-            case 't': *write++ = '\t'; read += 2; break;
-            case 'r': *write++ = '\r'; read += 2; break;
-            case '\\': case '"': *write++ = *++read; read++; break;
-            default: *write++ = *read++; read++; break;
+            read++;
+            switch (*read) {
+            case 'n': *write++ = '\n'; break;
+            case 't': *write++ = '\t'; break;
+            case 'r': *write++ = '\r'; break;
+            case '\\':
+            case '"': *write++ = *read; break;
+            default: *write++ = '\\'; *write++ = *read; break;
             }
+            read++;
         } else {
             *write++ = *read++;
         }
@@ -38,10 +45,10 @@ static char* json_find(const char* json, const char* key, char* out, size_t size
 
     char pattern[64];
     snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    
+
     const char* start = strstr(json, pattern);
     if (!start) return NULL;
-    
+
     start += strlen(pattern);
     while (*start == ' ' || *start == '\t') start++;
 
@@ -49,19 +56,19 @@ static char* json_find(const char* json, const char* key, char* out, size_t size
         start++;
         const char* end = strchr(start, '"');
         if (!end) return NULL;
-        
+
         size_t len = (size_t)(end - start);
         if (len >= size) len = size - 1;
         strncpy(out, start, len);
         out[len] = '\0';
-        
+
         unescape_json_string(out);
         return out;
     }
 
     const char* end = start;
     while (*end && *end != ',' && *end != '}' && *end != ' ' && *end != '\n') end++;
-    
+
     size_t len = (size_t)(end - start);
     if (len >= size) len = size - 1;
     strncpy(out, start, len);
@@ -89,52 +96,52 @@ static void build_system_prompt(char* buffer, size_t buffer_size, const session_
              "4. Do NOT add any explanation. Your entire output must be just the prefix ('+' or '=') and the command.\n");
 }
 
-static void build_gemini_request(const Agent* agent, char* out, size_t size) {
+static void build_gemini_request(const llm_message_buffer* msgs, char* out, size_t size) {
     char combined_prompt[LLM_MAX_CONTENT * 2] = "";
-    
-    for (int i = 0; i < agent->msg_count; i++) {
-        if (strcmp(agent->roles[i], "system") == 0) {
-            safe_string_append(combined_prompt, agent->contents[i], sizeof(combined_prompt));
+
+    for (int i = 0; i < msgs->msg_count; i++) {
+        if (strcmp(msgs->roles[i], "system") == 0) {
+            safe_string_append(combined_prompt, msgs->contents[i], sizeof(combined_prompt));
             safe_string_append(combined_prompt, "\n\n", sizeof(combined_prompt));
-        } else if (strcmp(agent->roles[i], "user") == 0) {
-            safe_string_append(combined_prompt, agent->contents[i], sizeof(combined_prompt));
+        } else if (strcmp(msgs->roles[i], "user") == 0) {
+            safe_string_append(combined_prompt, msgs->contents[i], sizeof(combined_prompt));
         }
     }
-    
-    snprintf(out, size, 
-             "{\"contents\":[{\"parts\":[{\"text\":\"%s\"}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":100}}", 
+
+    snprintf(out, size,
+             "{\"contents\":[{\"parts\":[{\"text\":\"%s\"}]}],\"generationConfig\":{\"temperature\":0.7,\"maxOutputTokens\":100}}",
              combined_prompt);
 }
 
-static void build_openai_request(const Agent* agent, const config_t* config, char* out, size_t size) {
+static void build_openai_request(const llm_message_buffer* msgs, const config_t* config, char* out, size_t size) {
     char messages[LLM_MAX_BUFFER] = "[";
     int buffer_pos = 1;
 
-    for (int i = 0; i < agent->msg_count; i++) {
+    for (int i = 0; i < msgs->msg_count; i++) {
         if (i > 0) {
             messages[buffer_pos++] = ',';
         }
         buffer_pos += snprintf(messages + buffer_pos, sizeof(messages) - buffer_pos,
-                               "{\"role\":\"%s\",\"content\":\"%s\"}", 
-                               agent->roles[i], agent->contents[i]);
+                               "{\"role\":\"%s\",\"content\":\"%s\"}",
+                               msgs->roles[i], msgs->contents[i]);
     }
     messages[buffer_pos] = '\0';
     strcat(messages, "]");
 
     const char* model = config->llm.model[0] ? config->llm.model : "gpt-4.1-nano";
-    snprintf(out, size, 
-             "{\"model\":\"%s\",\"messages\":%s,\"temperature\":0.7,\"max_tokens\":100}", 
+    snprintf(out, size,
+             "{\"model\":\"%s\",\"messages\":%s,\"temperature\":0.7,\"max_tokens\":100}",
              model, messages);
 }
 
-static char* json_request(const Agent* agent, const config_t* config, char* out, size_t size) {
-    RETURN_IF_NULL(agent, NULL);
+static char* json_request(const llm_message_buffer* msgs, const config_t* config, char* out, size_t size) {
+    RETURN_IF_NULL(msgs, NULL);
     RETURN_IF_NULL(out, NULL);
 
     if (strcmp(config->llm.provider, "gemini") == 0) {
-        build_gemini_request(agent, out, size);
+        build_gemini_request(msgs, out, size);
     } else {
-        build_openai_request(agent, config, out, size);
+        build_openai_request(msgs, config, out, size);
     }
 
     return out;
@@ -181,7 +188,11 @@ static int http_request(const char* req, char* resp, size_t resp_size, const con
 
     int fd = mkstemp(temp_path);
     if (fd == -1) return -1;
-    if (fchmod(fd, 0600) == -1) { close(fd); unlink(temp_path); return -1; }
+    if (fchmod(fd, 0600) == -1) {
+        close(fd);
+        unlink(temp_path);
+        return -1;
+    }
 
     write(fd, req, strlen(req));
     close(fd);
@@ -196,8 +207,7 @@ static int http_request(const char* req, char* resp, size_t resp_size, const con
         snprintf(endpoint, sizeof(endpoint), "%s%s:generateContent", base_url, model);
     } else {
         const char* base_url = config->llm.endpoint[0] ? config->llm.endpoint : "https://api.openai.com/v1/chat/completions";
-        strncpy(endpoint, base_url, sizeof(endpoint) - 1);
-        endpoint[sizeof(endpoint) - 1] = '\0';
+        snprintf(endpoint, sizeof(endpoint), "%s", base_url);
     }
 
     char curl_cmd[LLM_MAX_BUFFER];
@@ -212,7 +222,10 @@ static int http_request(const char* req, char* resp, size_t resp_size, const con
     }
 
     FILE* pipe = popen(curl_cmd, "r");
-    if (!pipe) { unlink(temp_path); return -1; }
+    if (!pipe) {
+        unlink(temp_path);
+        return -1;
+    }
 
     size_t bytes = fread(resp, 1, resp_size - 1, pipe);
     resp[bytes] = '\0';
@@ -246,23 +259,23 @@ int send_to_llm(const char *input, const session_context_t *ctx, const config_t 
 
     memset(suggestion, 0, sizeof(suggestion_t));
 
-    Agent agent = {0};
+    llm_message_buffer msgs = {0};
 
     char system_prompt[LLM_MAX_CONTENT];
     build_system_prompt(system_prompt, sizeof(system_prompt), ctx);
 
-    strcpy(agent.roles[0], "system");
-    strncpy(agent.contents[0], system_prompt, LLM_MAX_CONTENT - 1);
-    agent.contents[0][LLM_MAX_CONTENT - 1] = '\0';
-    agent.msg_count = 1;
+    strcpy(msgs.roles[0], "system");
+    strncpy(msgs.contents[0], system_prompt, LLM_MAX_CONTENT - 1);
+    msgs.contents[0][LLM_MAX_CONTENT - 1] = '\0';
+    msgs.msg_count = 1;
 
-    strcpy(agent.roles[agent.msg_count], "user");
-    strncpy(agent.contents[agent.msg_count], input, LLM_MAX_CONTENT - 1);
-    agent.contents[agent.msg_count][LLM_MAX_CONTENT - 1] = '\0';
-    agent.msg_count++;
+    strcpy(msgs.roles[msgs.msg_count], "user");
+    strncpy(msgs.contents[msgs.msg_count], input, LLM_MAX_CONTENT - 1);
+    msgs.contents[msgs.msg_count][LLM_MAX_CONTENT - 1] = '\0';
+    msgs.msg_count++;
 
     char req[LLM_MAX_BUFFER], resp[LLM_MAX_BUFFER];
-    json_request(&agent, config, req, sizeof(req));
+    json_request(&msgs, config, req, sizeof(req));
 
     int err;
     if ((err = http_request(req, resp, sizeof(resp), config)) != 0) {

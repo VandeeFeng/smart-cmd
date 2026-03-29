@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "smart_cmd.h"
+#include "daemon_jrpc.h"
 #include <getopt.h>
 #include <sys/select.h>
 #include <sys/time.h>
@@ -7,12 +8,15 @@
 #include <dirent.h>
 #include <time.h>
 
+// MAX_IPC_MESSAGE_SIZE no longer needed, now using JSON-RPC
+// Keep definition to avoid compilation errors, but deprecated
 #define MAX_IPC_MESSAGE_SIZE 4096
 
-static daemon_session_t g_daemon_info = {0};
-static daemon_pty_t g_daemon_pty = {0};
-static command_history_manager_t g_command_history = {0};
-static volatile sig_atomic_t g_running = 1;
+// Global variables: removed static to allow daemon_jsonrpc_handlers.c access
+daemon_session_t g_daemon_info = {0};
+daemon_pty_t g_daemon_pty = {0};
+command_history_manager_t g_command_history = {0};
+volatile sig_atomic_t g_running = 1;
 
 void daemon_signal_handler(int signum) {
     switch (signum) {
@@ -180,156 +184,91 @@ int daemon_stop() {
     return 1;
 }
 
-static void build_session_context(session_context_t *ctx) {
-    memset(ctx, 0, sizeof(session_context_t));
-
-    if (g_daemon_pty.active) {
-        get_daemon_pty_context(&g_daemon_pty, ctx->terminal_buffer, sizeof(ctx->terminal_buffer));
-    }
-
-    char recent_commands[1024] = {0};
-    if (get_recent_commands(&g_command_history, recent_commands, MAX_HISTORY_MESSAGES, 3600) > 0) {
-        size_t current_len = strlen(ctx->terminal_buffer);
-        snprintf(ctx->terminal_buffer + current_len, sizeof(ctx->terminal_buffer) - current_len,
-                 "\n\nRecent user commands:\n%s", recent_commands);
-    }
-}
-
-static void handle_ping_request(char *response, size_t response_size) {
-    snprintf(response, response_size, "%s", "pong");
-}
-
-static void handle_suggestion_request(const char *input, char *response, size_t response_size, int debug) {
-    printf("Received suggestion request: %s\n", input);
-
-    add_command_to_history(&g_command_history, input);
-
-    session_context_t ctx;
-    build_session_context(&ctx);
-
-    if (debug) {
-        printf("Context before LLM call:\n");
-        printf("  Terminal Buffer: <start>%s<end>\n", ctx.terminal_buffer);
-        fflush(stdout);
-    }
-
-    config_t config;
-    if (load_config(&config) != 0) {
-        snprintf(response, response_size, "%s", "error:Failed to load configuration");
-        return;
-    }
-
-    suggestion_t suggestion;
-    if (send_to_llm(input, &ctx, &config, &suggestion) == 0) {
-        snprintf(response, response_size, "%c%s", suggestion.type, suggestion.suggestion);
-    } else {
-        snprintf(response, response_size, "%s", "error:Failed to get AI suggestion");
-    }
-}
-
-static void handle_context_request(char *response, size_t response_size) {
-    if (!g_daemon_pty.active) {
-        snprintf(response, response_size, "%s", "error:No active PTY session");
-        return;
-    }
-
-    char pty_context[MAX_CONTEXT_LEN];
-    if (get_daemon_pty_context(&g_daemon_pty, pty_context, sizeof(pty_context)) > 0) {
-        snprintf(response, response_size, "%.4000s", pty_context);
-    }
-}
-
-static void process_request(const char *request, char *response, size_t response_size, int debug) {
-    if (strcmp(request, "ping") == 0) {
-        handle_ping_request(response, response_size);
-        return;
-    }
-
-    if (strncmp(request, "suggestion:", 11) == 0) {
-        handle_suggestion_request(request + 11, response, response_size, debug);
-        return;
-    }
-
-    if (strncmp(request, "context", 7) == 0) {
-        handle_context_request(response, response_size);
-        return;
-    }
-
-    snprintf(response, response_size, "%s", "error:Unknown request");
-}
-
-static void handle_ipc_connection(int server_fd, int debug) {
-    int client_fd = accept_ipc_connection(server_fd);
-    if (client_fd == -1) {
-        if (debug) {
-            printf("Failed to accept connection (real error)\n");
-        }
-        usleep(100000);
-        return;
-    }
-
-    if (client_fd == 0) {
-        return;
-    }
-
-    if (debug) {
-        printf("Accepted client connection\n");
-    }
-
-    char request[MAX_IPC_MESSAGE_SIZE];
-    int result = receive_ipc_message(client_fd, request, sizeof(request));
-    if (result <= 0) {
-        close(client_fd);
-        return;
-    }
-
-    if (debug) {
-        printf("Received request: %s\n", request);
-    }
-
-    char response[MAX_IPC_MESSAGE_SIZE];
-    memset(response, 0, sizeof(response));
-
-    process_request(request, response, sizeof(response), debug);
-
-    if (debug) {
-        printf("Sending response: %s\n", response);
-    }
-
-    if (send_ipc_message(client_fd, response) == -1 && debug) {
-        printf("Failed to send response\n");
-    }
-
-    close(client_fd);
-}
-
-static void read_from_pty_if_active(int debug) {
-    if (!g_daemon_pty.active) {
-        return;
-    }
-
-    char buffer[1024];
-    int bytes_read = read_from_daemon_pty(&g_daemon_pty, buffer, sizeof(buffer));
-
-    if (bytes_read > 0 && debug) {
-        printf("PTY output: %.100s%s\n", buffer, bytes_read > 100 ? "..." : "");
-    } else if (bytes_read == 0) {
-        if (debug) {
-            printf("PTY session ended\n");
-        }
-        cleanup_daemon_pty(&g_daemon_pty);
-    }
-}
-
 int daemon_main_loop(int server_fd, int debug) {
     if (debug) {
         printf("Daemon main loop started (server_fd: %d)\n", server_fd);
+        printf("Using JSON-RPC 2.0 protocol\n");
     }
 
+    // Use select to monitor both socket and PTY
     while (g_running) {
-        handle_ipc_connection(server_fd, debug);
-        read_from_pty_if_active(debug);
-        usleep(10000);
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+
+        int max_fd = server_fd;
+
+        // If PTY is active, also monitor PTY
+        if (g_daemon_pty.active) {
+            FD_SET(g_daemon_pty.master_fd, &readfds);
+            if (g_daemon_pty.master_fd > max_fd) {
+                max_fd = g_daemon_pty.master_fd;
+            }
+        }
+
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000; // 100ms timeout
+
+        int activity = select(max_fd + 1, &readfds, NULL, NULL, &timeout);
+
+        if (activity < 0) {
+            if (errno == EINTR) {
+                // Interrupted by signal, continue
+                continue;
+            }
+            perror("select");
+            break;
+        }
+
+        if (activity == 0) {
+            // Timeout, continue
+            continue;
+        }
+
+        // Handle socket connection
+        if (FD_ISSET(server_fd, &readfds)) {
+            int client_fd = accept_ipc_connection(server_fd);
+            if (client_fd > 0) {
+                if (debug) {
+                    printf("Accepted client connection\n");
+                }
+
+                // Receive JSON-RPC request
+                jsonrpc_req_t *req = NULL;
+                if (rpc_recv_request(client_fd, &req) == 0) {
+                    if (debug) {
+                        printf("Received JSON-RPC request: %s\n", req->method_str);
+                    }
+
+                    // Handle request
+                    handle_jsonrpc_request(client_fd, req);
+
+                    rpc_free_request(req);
+                } else {
+                    if (debug) {
+                        printf("Failed to receive JSON-RPC request\n");
+                    }
+                }
+
+                close(client_fd);
+            }
+        }
+
+        // Handle PTY output
+        if (g_daemon_pty.active && FD_ISSET(g_daemon_pty.master_fd, &readfds)) {
+            char buffer[1024];
+            int bytes_read = read_from_daemon_pty(&g_daemon_pty, buffer, sizeof(buffer));
+
+            if (bytes_read > 0 && debug) {
+                printf("PTY output: %.100s%s\n", buffer, bytes_read > 100 ? "..." : "");
+            } else if (bytes_read == 0) {
+                if (debug) {
+                    printf("PTY session ended\n");
+                }
+                cleanup_daemon_pty(&g_daemon_pty);
+            }
+        }
     }
 
     return 0;

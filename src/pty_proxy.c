@@ -90,41 +90,42 @@ int read_from_daemon_pty(daemon_pty_t *pty, char *buffer, size_t buffer_size) {
     FD_ZERO(&read_fds);
     FD_SET(pty->master_fd, &read_fds);
     timeout.tv_sec = 0;
-    timeout.tv_usec = 10000; // 10ms timeout
+    timeout.tv_usec = 10000;
 
     int result = select(pty->master_fd + 1, &read_fds, NULL, NULL, &timeout);
 
-    if (result > 0 && FD_ISSET(pty->master_fd, &read_fds)) {
-        ssize_t bytes_read = read(pty->master_fd, buffer, buffer_size - 1);
-        if (bytes_read > 0) {
-            buffer[bytes_read] = '\0';
-
-            // Store in internal buffer for context
-            size_t space_left = sizeof(pty->buffer) - pty->buffer_pos - 1;
-            if (space_left > 0) {
-                size_t copy_len = ((size_t)bytes_read < space_left) ? (size_t)bytes_read : space_left;
-                memcpy(pty->buffer + pty->buffer_pos, buffer, copy_len);
-                pty->buffer_pos += copy_len;
-                pty->buffer[pty->buffer_pos] = '\0';
-            }
-
-            // If buffer is getting full, make room
-            if ((size_t)pty->buffer_pos >= sizeof(pty->buffer) / 2) {
-                size_t move_size = sizeof(pty->buffer) / 2;
-                size_t bytes_to_move = (size_t)pty->buffer_pos - move_size;
-                memmove(pty->buffer, pty->buffer + move_size, bytes_to_move);
-                pty->buffer_pos -= (int)move_size;
-            }
-
-            return bytes_read;
-        } else if (bytes_read == 0) {
-            // Shell closed the connection
-            pty->active = 0;
-            return 0;
-        }
+    if (result <= 0 || !FD_ISSET(pty->master_fd, &read_fds)) {
+        return 0;
     }
 
-    return 0;
+    ssize_t bytes_read = read(pty->master_fd, buffer, buffer_size - 1);
+    if (bytes_read < 0) {
+        return 0;
+    }
+
+    if (bytes_read == 0) {
+        pty->active = 0;
+        return 0;
+    }
+
+    buffer[bytes_read] = '\0';
+
+    size_t space_left = sizeof(pty->buffer) - pty->buffer_pos - 1;
+    if (space_left > 0) {
+        size_t copy_len = (bytes_read < (ssize_t)space_left) ? (size_t)bytes_read : space_left;
+        memcpy(pty->buffer + pty->buffer_pos, buffer, copy_len);
+        pty->buffer_pos += copy_len;
+        pty->buffer[pty->buffer_pos] = '\0';
+    }
+
+    if ((size_t)pty->buffer_pos >= sizeof(pty->buffer) / 2) {
+        size_t move_size = sizeof(pty->buffer) / 2;
+        size_t bytes_to_move = (size_t)pty->buffer_pos - move_size;
+        memmove(pty->buffer, pty->buffer + move_size, bytes_to_move);
+        pty->buffer_pos -= (int)move_size;
+    }
+
+    return bytes_read;
 }
 
 int write_to_daemon_pty(daemon_pty_t *pty, const char *data, size_t len) {

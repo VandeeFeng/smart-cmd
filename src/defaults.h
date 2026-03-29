@@ -12,6 +12,8 @@
 #define DEFAULT_SESSION_TIMEOUT 3600
 #define DEFAULT_DAEMON_STARTUP_DELAY 500000
 #define DEFAULT_DAEMON_STARTUP_ATTEMPTS 10
+#define DEFAULT_DAEMON_STOP_WAIT 100000      // 100ms wait for graceful shutdown
+#define DEFAULT_DAEMON_INIT_WAIT 100000      // 100ms wait for daemon initialization
 
 // Buffer sizes for LLM client
 #define LLM_MAX_BUFFER 8192

@@ -77,17 +77,15 @@ int get_recent_commands(command_history_manager_t *manager, char *recent_command
     time_t cutoff_time = (max_age > 0) ? (now - max_age) : 0;
 
     recent_commands[0] = '\0';
-    int found = 0;
     int commands_added = 0;
 
-    // Start from most recent commands and work backwards
     for (int i = 0; i < manager->count && commands_added < count; i++) {
         int index = (manager->current_index - 1 - i + MAX_HISTORY_COMMANDS) % MAX_HISTORY_COMMANDS;
 
         if (manager->commands[index].command[0] != '\0' &&
             manager->commands[index].timestamp >= cutoff_time) {
 
-            if (found > 0) {
+            if (commands_added > 0) {
                 size_t buf_len = strlen(recent_commands);
                 size_t remaining = MAX_CONTEXT_LEN - buf_len - 1;
 
@@ -98,12 +96,11 @@ int get_recent_commands(command_history_manager_t *manager, char *recent_command
                 snprintf(recent_commands, MAX_CONTEXT_LEN, "%s", manager->commands[index].command);
             }
 
-            found++;
             commands_added++;
         }
     }
 
-    return found;
+    return commands_added;
 }
 
 int save_command_history(command_history_manager_t *manager) {

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "smart_cmd.h"
+#include "defaults.h"
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -60,13 +61,13 @@ int check_daemon_running(const char *lock_file) {
     if (!f) return 0;
 
     pid_t stored_pid;
-    int result = 0;
-    if (fscanf(f, "%d", &stored_pid) == 1) {
-        result = is_process_running(stored_pid);
+    if (fscanf(f, "%d", &stored_pid) != 1) {
+        fclose(f);
+        return 0;
     }
-    fclose(f);
 
-    return result;
+    fclose(f);
+    return is_process_running(stored_pid);
 }
 
 int create_daemon_lock_force(const char *lock_file, pid_t pid) {
@@ -104,17 +105,82 @@ int check_safe_environment() {
     return 0;
 }
 
+static void daemon_child_process(daemon_session_t *info) {
+    if (setsid() == -1) {
+        perror("setsid");
+        exit(1);
+    }
+
+    if (chdir("/") == -1) {
+        perror("chdir");
+        exit(1);
+    }
+
+    umask(077);
+
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+
+    open("/dev/null", O_RDONLY);
+    open("/dev/null", O_WRONLY);
+    open("/dev/null", O_WRONLY);
+
+    if (setup_daemon_signal_handlers() == -1) {
+        exit(1);
+    }
+
+    setenv("SMART_CMD_DAEMON_ACTIVE", "1", 1);
+
+    info->daemon_pid = getpid();
+    info->start_time = time(NULL);
+    info->active = 1;
+
+    while (g_daemon_running) {
+        sleep(1);
+    }
+
+    cleanup_daemon_lock(info->paths.lock_file);
+    unlink(info->paths.socket_path);
+    exit(0);
+}
+
+static int daemon_parent_process(pid_t child_pid, daemon_session_t *info) {
+    info->daemon_pid = child_pid;
+    info->start_time = time(NULL);
+    info->active = 1;
+
+    usleep(DEFAULT_DAEMON_INIT_WAIT);
+
+    if (kill(child_pid, 0) == -1) {
+        fprintf(stderr, "ERROR: start_daemon_process: Daemon failed to start\n");
+        info->active = 0;
+        cleanup_daemon_lock(info->paths.lock_file);
+        return -1;
+    }
+
+    printf("Daemon started successfully (PID: %d, Session: %s)\n",
+           child_pid, info->paths.session_id);
+    return 0;
+}
+
+static int setup_daemon_paths(daemon_session_t *info) {
+    int err;
+
+    if ((err = generate_session_id(info->paths.session_id, sizeof(info->paths.session_id))) != 0) return err;
+    if ((err = generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path), info->paths.session_id)) != 0) return err;
+    if ((err = generate_lock_path(info->paths.lock_file, sizeof(info->paths.lock_file), info->paths.session_id)) != 0) return err;
+    if ((err = generate_log_path(info->paths.log_file, sizeof(info->paths.log_file), info->paths.session_id)) != 0) return err;
+
+    return create_daemon_lock(info->paths.lock_file, getpid());
+}
+
 int start_daemon_process(daemon_session_t *info) {
     if (!info) return -1;
 
-    if (check_safe_environment() == -1) return -1;
-
-    if (generate_session_id(info->paths.session_id, sizeof(info->paths.session_id)) != 0) return -1;
-    if (generate_socket_path(info->paths.socket_path, sizeof(info->paths.socket_path), info->paths.session_id) != 0) return -1;
-    if (generate_lock_path(info->paths.lock_file, sizeof(info->paths.lock_file), info->paths.session_id) != 0) return -1;
-    if (generate_log_path(info->paths.log_file, sizeof(info->paths.log_file), info->paths.session_id) != 0) return -1;
-
-    if (create_daemon_lock(info->paths.lock_file, getpid()) != 0) return -1;
+    int err;
+    if ((err = check_safe_environment()) != 0) return err;
+    if ((err = setup_daemon_paths(info)) != 0) return err;
 
     pid_t pid = fork();
     if (pid == -1) {
@@ -124,75 +190,12 @@ int start_daemon_process(daemon_session_t *info) {
     }
 
     if (pid == 0) {
-        // Child process (daemon)
-        // Create new session
-        if (setsid() == -1) {
-            perror("setsid");
-            exit(1);
-        }
-
-        // Change working directory to root
-        if (chdir("/") == -1) {
-            perror("chdir");
-            exit(1);
-        }
-
-        // Set umask
-        umask(077);
-
-        // Close standard file descriptors
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
-
-        // Open /dev/null for standard descriptors
-        open("/dev/null", O_RDONLY); // stdin
-        open("/dev/null", O_WRONLY); // stdout
-        open("/dev/null", O_WRONLY); // stderr
-
-        // Setup signal handlers
-        if (setup_daemon_signal_handlers() == -1) {
-            exit(1);
-        }
-
-        // Set environment variable to prevent nesting
-        setenv("SMART_CMD_DAEMON_ACTIVE", "1", 1);
-
-        info->daemon_pid = getpid();
-        info->start_time = time(NULL);
-        info->active = 1;
-
-        // Main daemon loop would go here
-        // For now, just keep the process running
-        while (g_daemon_running) {
-            sleep(1);
-        }
-
-        // Cleanup
-        cleanup_daemon_lock(info->paths.lock_file);
-        unlink(info->paths.socket_path);
-        exit(0);
+        daemon_child_process(info);
     } else {
-        // Parent process
-        info->daemon_pid = pid;
-        info->start_time = time(NULL);
-        info->active = 1;
-
-        // Give daemon a moment to start
-        usleep(100000); // 100ms
-
-        // Check if daemon is still running
-        if (kill(pid, 0) == -1) {
-            fprintf(stderr, "ERROR: start_daemon_process: Daemon failed to start\n");
-            info->active = 0;
-            cleanup_daemon_lock(info->paths.lock_file);
-            return -1;
-        }
-
-        printf("Daemon started successfully (PID: %d, Session: %s)\n",
-               pid, info->paths.session_id);
-        return 0;
+        return daemon_parent_process(pid, info);
     }
+
+    return 0;
 }
 
 int stop_daemon_process(daemon_session_t *info) {
@@ -237,19 +240,17 @@ int cleanup_old_sessions(const char *base_path, int max_age_hours) {
     if (!base_path) return -1;
 
     DIR *dir = opendir(base_path);
-    if (!dir) return 0; // Directory may not exist, that's OK
+    if (!dir) return 0;
 
     time_t cutoff_time = time(NULL) - (max_age_hours * 3600);
     int cleaned_files = 0;
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        // Skip . and ..
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
         }
 
-        // Only process smart-cmd files
         if (!starts_with(entry->d_name, "smart-cmd.")) {
             continue;
         }
@@ -258,11 +259,9 @@ int cleanup_old_sessions(const char *base_path, int max_age_hours) {
         snprintf(full_path, sizeof(full_path), "%s/%s", base_path, entry->d_name);
 
         struct stat st;
-        if (stat(full_path, &st) == 0) {
-            if (st.st_mtime < cutoff_time) {
-                if (unlink(full_path) == 0) {
-                    cleaned_files++;
-                }
+        if (stat(full_path, &st) == 0 && st.st_mtime < cutoff_time) {
+            if (unlink(full_path) == 0) {
+                cleaned_files++;
             }
         }
     }

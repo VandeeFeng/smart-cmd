@@ -97,14 +97,14 @@ int safe_write_file(const char *file_path, const char *content, int sync_to_disk
 
     size_t content_len = strlen(content);
     ssize_t written = write(fd, content, content_len);
+    int result = (written == (ssize_t)content_len) ? 0 : -1;
 
-    if (sync_to_disk && fsync(fd) == -1) {
-        close(fd);
-        return -1;
+    if (result == 0 && sync_to_disk && fsync(fd) == -1) {
+        result = -1;
     }
 
     close(fd);
-    return (written == (ssize_t)content_len) ? 0 : -1;
+    return result;
 }
 
 int safe_read_file(const char *file_path, char *buffer, size_t buffer_size) {
@@ -184,8 +184,11 @@ int safe_string_copy(char *dest, const char *src, size_t dest_size) {
     RETURN_IF_NULL(src, -1);
     if (dest_size == 0) return -1;
 
-    strncpy(dest, src, dest_size - 1);
-    dest[dest_size - 1] = '\0';
+    size_t len = strlen(src);
+    if (len >= dest_size) len = dest_size - 1;
+
+    memcpy(dest, src, len);
+    dest[len] = '\0';
     return 0;
 }
 
@@ -196,7 +199,13 @@ int safe_string_append(char *dest, const char *src, size_t dest_size) {
     size_t dest_len = strlen(dest);
     if (dest_len >= dest_size - 1) return -1;
 
-    strncat(dest, src, dest_size - dest_len - 1);
+    size_t src_len = strlen(src);
+    size_t available = dest_size - dest_len - 1;
+
+    if (src_len > available) src_len = available;
+
+    memcpy(dest + dest_len, src, src_len);
+    dest[dest_len + src_len] = '\0';
     return 0;
 }
 

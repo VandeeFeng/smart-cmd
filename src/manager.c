@@ -87,15 +87,16 @@ static int write_completion_state(int enabled) {
 
 int cmd_toggle() {
     int enabled;
-    
-    if (read_completion_state(&enabled) != 0) {
+    int err;
+
+    if ((err = read_completion_state(&enabled)) != 0) {
         fprintf(stderr, "ERROR: cmd_toggle: Failed to read completion state\n");
         return -1;
     }
 
     enabled = !enabled;
 
-    if (write_completion_state(enabled) != 0) {
+    if ((err = write_completion_state(enabled)) != 0) {
         fprintf(stderr, "ERROR: cmd_toggle: Failed to write completion state\n");
         return -1;
     }
@@ -128,17 +129,70 @@ int cmd_status() {
     return 0;
 }
 
+static int validate_daemon_config(config_t *config) {
+    if (!config->enable_proxy_mode) {
+        fprintf(stderr, "ERROR: cmd_start: Daemon mode is disabled in configuration\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int verify_daemon_binary(const char *daemon_bin) {
+    if (!daemon_bin) {
+        fprintf(stderr, "ERROR: cmd_start: Failed to get daemon binary path\n");
+        return 1;
+    }
+
+    if (access(daemon_bin, X_OK) != 0) {
+        fprintf(stderr, "ERROR: cmd_start: Daemon binary not found or not executable: %s\n", daemon_bin);
+        return 1;
+    }
+
+    return 0;
+}
+
+static int wait_for_daemon_start(daemon_session_t *info) {
+    for (int attempt = 0; attempt < DEFAULT_DAEMON_STARTUP_ATTEMPTS; attempt++) {
+        usleep(DEFAULT_DAEMON_STARTUP_DELAY);
+
+        if (find_running_daemon(info) == 0) {
+            printf("%s (PID: %d, Session: %s)\n",
+                   MSG_DAEMON_STARTED, info->daemon_pid, info->paths.session_id);
+            return 0;
+        }
+    }
+
+    fprintf(stderr, "ERROR: cmd_start: %s\n", MSG_DAEMON_START_FAILED);
+    return 1;
+}
+
+static int spawn_daemon_process(const char *daemon_bin) {
+    pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        return 1;
+    }
+
+    if (pid == 0) {
+        execl(daemon_bin, daemon_bin, NULL);
+        perror("execl");
+        exit(1);
+    }
+
+    return 0;
+}
+
 int cmd_start() {
     config_t config;
     int err;
+
     if ((err = load_config(&config)) != 0) {
         fprintf(stderr, "ERROR: cmd_start: Failed to load configuration\n");
         return 1;
     }
 
-    if (!config.enable_proxy_mode) {
-        fprintf(stderr, "ERROR: cmd_start: Daemon mode is disabled in configuration\n");
-        return 1;
+    if ((err = validate_daemon_config(&config)) != 0) {
+        return err;
     }
 
     char *daemon_bin = get_default_bin_path("smart-cmd-daemon");
@@ -147,10 +201,9 @@ int cmd_start() {
         return 1;
     }
 
-    if (access(daemon_bin, X_OK) != 0) {
-        fprintf(stderr, "ERROR: cmd_start: Daemon binary not found or not executable: %s\n", daemon_bin);
+    if ((err = verify_daemon_binary(daemon_bin)) != 0) {
         free(daemon_bin);
-        return 1;
+        return err;
     }
 
     daemon_session_t info = {0};
@@ -160,33 +213,13 @@ int cmd_start() {
         return 0;
     }
 
-    pid_t pid = fork();
-    if (pid == -1) {
-        perror("fork");
+    if ((err = spawn_daemon_process(daemon_bin)) != 0) {
         free(daemon_bin);
-        return 1;
+        return err;
     }
 
-    if (pid == 0) {
-        execl(daemon_bin, daemon_bin, NULL);
-        perror("execl");
-        exit(1);
-    } else {
-        free(daemon_bin);
-
-        for (int attempt = 0; attempt < DEFAULT_DAEMON_STARTUP_ATTEMPTS; attempt++) {
-            usleep(DEFAULT_DAEMON_STARTUP_DELAY);
-
-            if (find_running_daemon(&info) == 0) {
-                printf("%s (PID: %d, Session: %s)\n",
-                       MSG_DAEMON_STARTED, info.daemon_pid, info.paths.session_id);
-                return 0;
-            }
-        }
-
-        fprintf(stderr, "ERROR: cmd_start: %s\n", MSG_DAEMON_START_FAILED);
-        return 1;
-    }
+    free(daemon_bin);
+    return wait_for_daemon_start(&info);
 }
 
 int cmd_stop() {
@@ -197,7 +230,7 @@ int cmd_stop() {
     }
 
     if (kill(info.daemon_pid, SIGTERM) == 0) {
-        usleep(100000);
+        usleep(DEFAULT_DAEMON_STOP_WAIT);
         cleanup_lock_file(info.paths.lock_file);
         unlink(info.paths.socket_path);
         printf("%s\n", MSG_DAEMON_STOPPED);
